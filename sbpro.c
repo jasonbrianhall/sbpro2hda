@@ -99,10 +99,26 @@ static void parse_args(int argc, char **argv)
     }
 }
 
+static int host_is_cwsdpmi(void)
+{
+    int flags;
+    char info[128];
+    memset(info, 0, sizeof info);
+    if (__dpmi_get_capabilities(&flags, info) != 0) return 0;
+    info[sizeof info - 1] = 0;
+    return strstr(info + 2, "CWSDPMI") != NULL;       /* vendor name after 2 version bytes */
+}
+
 int main(int argc, char **argv)
 {
     parse_args(argc, argv);
     printf("SBPRO: Sound Blaster Pro 2.0 emulation over HD Audio\n");
+
+    if (host_is_cwsdpmi()) {
+        printf("Running under CWSDPMI, which can't keep a TSR resident.\n"
+               "Load HDPMI32i -r first.\n");
+        return 1;
+    }
 
     if (!qpi_detect()) {
         printf("QPI not found. Load JEMM386/JEMMEX and JLOAD QPIEMU.DLL.\n");
