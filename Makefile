@@ -10,6 +10,11 @@ DLL_TARGET = sbpro.dll
 # Docker image with the MinGW 32-bit cross compiler
 MINGW_IMAGE = sbpro-mingw
 
+# DOS-side tools: JEMM (JEMMEX + JLOAD, matching versions) and HDPMI32i
+JEMM_URL = https://github.com/Baron-von-Riedesel/Jemm/releases/download/v5.86/JemmB_v586.zip
+HXRT_URL = https://github.com/Baron-von-Riedesel/HX/releases/download/v2.23/HXRT223.zip
+DIST     = dist
+
 # QEMU disk image with FreeDOS 1.3 (JEMMEX + JLOAD)
 DOS_IMAGE = freedos.img
 
@@ -34,11 +39,20 @@ pull-mingw:
 	printf 'FROM debian:stable-slim\nRUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 && rm -rf /var/lib/apt/lists/*\n' \
 		| docker build -t $(MINGW_IMAGE) -
 
+# Target to download JEMMEX, JLOAD and HDPMI32i into dist/
+get-dos-tools:
+	mkdir -p $(DIST)
+	wget -N $(JEMM_URL)
+	wget -N $(HXRT_URL)
+	unzip -o -j JemmB_v586.zip JEMMEX.EXE JLOAD.EXE -d $(DIST)
+	unzip -o -j HXRT223.zip BIN/HDPMI32i.EXE -d $(DIST)
+
 # Target to build SBPRO.DLL using MinGW in Docker
-msdos: pull-mingw
+msdos: pull-mingw get-dos-tools
 	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(MINGW_IMAGE) /bin/sh -c "cd /src && \
 	$(CC) $(CFLAGS) $(SRCS) -o $(DLL_TARGET) $(LDFLAGS) && \
 	$(PATCH_PX)"
+	cp $(DLL_TARGET) $(DIST)/SBPRO.DLL
 
 # Target to build with a locally installed MinGW (no Docker)
 local:
@@ -47,12 +61,13 @@ local:
 
 # Target to run in QEMU with Intel HD Audio
 run: msdos
-	qemu-system-i386 -m 64 -hda $(DOS_IMAGE) -hdb fat:rw:. \
+	qemu-system-i386 -m 64 -hda $(DOS_IMAGE) -hdb fat:rw:$(DIST) \
 		-audiodev pa,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0
 
 # Clean target to remove generated files
 clean:
-	rm -f $(DLL_TARGET) *.o || true
+	rm -f $(DLL_TARGET) *.o JemmB_v586.zip HXRT223.zip || true
+	rm -rf $(DIST) || true
 	rm *.DLL || true
 
-.PHONY: all pull-mingw msdos local run clean
+.PHONY: all pull-mingw get-dos-tools msdos local run clean
