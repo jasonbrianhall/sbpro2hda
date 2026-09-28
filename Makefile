@@ -1,46 +1,49 @@
-# Makefile for MS-DOS with DPMI support (runs under HDPMI32i, not CWSDPMI)
-VERSION=0.2
+# Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
+VERSION=0.3
 
 # Source files
-SRCS = sbpro.c hda.c pci.c qpi.c dsp.c
+SRCS = sbpro.c hda.c pci.c dsp.c libc.c jlm.S
 
-# Output executable
-DOS_TARGET = sbpro.exe
-DOS_COFF = sbpro
+# Output module
+DLL_TARGET = sbpro.dll
 
-# Docker image for DJGPP
-DJGPP_IMAGE = djfdyuruiry/djgpp
+# Docker image with the MinGW 32-bit cross compiler
+MINGW_IMAGE = sbpro-mingw
 
-# Correct CSDPMI URL
-CSDPMI_URL = http://na.mirror.garr.it/mirrors/djgpp/current/v2misc/csdpmi7b.zip
-
-# QEMU disk image with FreeDOS + JEMM + HDPMI32i
+# QEMU disk image with FreeDOS 1.3 (JEMMEX + JLOAD)
 DOS_IMAGE = freedos.img
 
 # Get current user and group IDs for Docker
 USER_ID = $(shell id -u)
 GROUP_ID = $(shell id -g)
 
+CC      = i686-w64-mingw32-gcc
+CFLAGS  = -O2 -Wall -march=i486 -mgeneral-regs-only -ffreestanding -fno-builtin \
+          -fno-stack-protector -fno-asynchronous-unwind-tables -mno-stack-arg-probe
+LDFLAGS = -shared -nostdlib -Wl,--subsystem,native -Wl,-e,_DllMain@12 \
+          -Wl,--image-base,0x10000000 -lgcc
+
+# JLOAD only accepts "PX" binaries: patch the "PE" signature
+PATCH_PX = sh patchpx.sh $(DLL_TARGET)
+
 # Default target
 all: msdos
 
-# Target to pull the DJGPP Docker image
-pull-djgpp:
-	docker pull $(DJGPP_IMAGE)
+# Target to build the MinGW Docker image
+pull-mingw:
+	printf 'FROM debian:stable-slim\nRUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 && rm -rf /var/lib/apt/lists/*\n' \
+		| docker build -t $(MINGW_IMAGE) -
 
-# Target to download CSDPMI
-get-csdpmi:
-	wget $(CSDPMI_URL)
-	unzip -o csdpmi7b.zip -d csdpmi
+# Target to build SBPRO.DLL using MinGW in Docker
+msdos: pull-mingw
+	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(MINGW_IMAGE) /bin/sh -c "cd /src && \
+	$(CC) $(CFLAGS) $(SRCS) -o $(DLL_TARGET) $(LDFLAGS) && \
+	$(PATCH_PX)"
 
-# Target to build for MS-DOS using DJGPP in Docker.
-# CWSDSTUB only starts its embedded CWSDPMI when no DPMI host is loaded;
-# with HDPMI32i -r resident, HDPMI is used (and required to stay resident).
-msdos: pull-djgpp get-csdpmi
-	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(DJGPP_IMAGE) /bin/sh -c "cd /src && \
-	gcc -s $(SRCS) -o $(DOS_TARGET) -O2 -Wall -march=i386 -mtune=i686 && \
-	exe2coff $(DOS_TARGET) && \
-	cat csdpmi/bin/CWSDSTUB.EXE $(DOS_COFF) > $(DOS_TARGET)"
+# Target to build with a locally installed MinGW (no Docker)
+local:
+	$(CC) $(CFLAGS) $(SRCS) -o $(DLL_TARGET) $(LDFLAGS)
+	$(PATCH_PX)
 
 # Target to run in QEMU with Intel HD Audio
 run: msdos
@@ -49,9 +52,7 @@ run: msdos
 
 # Clean target to remove generated files
 clean:
-	rm -f $(DOS_TARGET) $(DOS_COFF) *.o csdpmi7b.zip || true
-	rm -rf csdpmi || true
-	rm *.EXE || true
-	rm *.zip.* || true
+	rm -f $(DLL_TARGET) *.o || true
+	rm *.DLL || true
 
-.PHONY: all pull-djgpp get-csdpmi msdos run clean
+.PHONY: all pull-mingw msdos local run clean

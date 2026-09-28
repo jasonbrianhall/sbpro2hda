@@ -1,5 +1,5 @@
 /* PCI config space via mechanism #1 (0xCF8/0xCFC). */
-#include <pc.h>
+#include "io.h"
 #include "pci.h"
 
 static uint32_t cfg_addr(PciDev d, int off)
@@ -10,14 +10,14 @@ static uint32_t cfg_addr(PciDev d, int off)
 
 uint32_t pci_read(PciDev d, int off)
 {
-    outportl(0xCF8, cfg_addr(d, off));
-    return inportl(0xCFC);
+    outl(0xCF8, cfg_addr(d, off));
+    return inl(0xCFC);
 }
 
 void pci_write(PciDev d, int off, uint32_t v)
 {
-    outportl(0xCF8, cfg_addr(d, off));
-    outportl(0xCFC, v);
+    outl(0xCF8, cfg_addr(d, off));
+    outl(0xCFC, v);
 }
 
 int pci_find_class(int cls, int sub, PciDev *out)

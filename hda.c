@@ -1,21 +1,17 @@
-/* Intel HD Audio output for a resident DJGPP client.
+/* Intel HD Audio output for SBPRO.DLL (runs inside Jemm at ring 0).
  *
- * MMIO is reached through an LDT selector over a DPMI physical mapping.
- * CORB, RIRB, BDL and the sample ring live in one conventional-memory block:
- * JEMM maps the first 640K 1:1, so its linear address is the physical
- * address the controller DMAs from.
+ * The controller registers are mapped with _PageReserve/_PageCommitPhys.
+ * CORB, RIRB, BDL and the sample ring live in one locked XMS block, so the
+ * controller gets its physical address and we write through a mapping.
  *
- * The stream raises IOC at the end of every BDL entry; the handler refills
- * the ring a fixed distance ahead of the link position.
+ * The stream raises IOC at the end of every BDL entry. The IRQ's real-mode
+ * vector points at a V86 callback, so the handler runs here at ring 0
+ * whether the interrupt arrived in V86 mode or was reflected down by a
+ * DOS extender.
  */
-#include <stdio.h>
 #include <string.h>
-#include <dpmi.h>
-#include <go32.h>
-#include <pc.h>
-#include <sys/farptr.h>
-#include <sys/movedata.h>
-#include <dos.h>
+#include "io.h"
+#include "jlm.h"
 #include "pci.h"
 #include "hda.h"
 
@@ -24,29 +20,39 @@
 #define RING_FRAMES  (RING_BUFS * CHUNK_FRAMES)       /* power of two */
 #define RING_MASK    (RING_FRAMES - 1)
 #define TARGET_AHEAD (2 * CHUNK_FRAMES)                /* ~21 ms */
-#define RENDER_MAX   256
 
-static int hsel;                                       /* MMIO selector */
-static unsigned long corb_lin, rirb_lin, bdl_lin, ring_lin;
-static int dos_sel;
-static uint32_t sd;                                    /* stream descriptor offset */
+/* DMA block layout, 4 KB aligned */
+#define RIRB_OFF  0x0000        /* 2 KB */
+#define CORB_OFF  0x0800        /* 1 KB */
+#define BDL_OFF   0x0C00        /* 128 bytes */
+#define RING_OFF  0x1000        /* 16 KB */
+#define DMA_BYTES (RING_OFF + RING_FRAMES * 4)
+#define DMA_PAGES (DMA_BYTES / 4096)
+
+static volatile uint8_t *mmio;
+static uint32_t mmio_lin;
+static uint8_t *dma;
+static uint32_t dma_lin, dma_phys;
+static uint32_t xms_entry;
+static uint16_t xms_handle;
+static int xms_locked;
+
+static uint32_t sd;
 static int stream_index;
 static uint16_t rirb_rp;
 static uint32_t write_pos;
-static int irq_line;
+static int irq_line = -1;
+static int running;
 static hda_render_fn render;
-static int16_t mixbuf[RENDER_MAX * 2];
-static _go32_dpmi_seginfo old_isr, new_isr;
-static int isr_vec;
+static uint32_t irq_callback;
+static int16_t *ring;
 
-static inline uint8_t  r8 (uint32_t o) { return _farpeekb(hsel, o); }
-static inline uint16_t r16(uint32_t o) { return _farpeekw(hsel, o); }
-static inline uint32_t r32(uint32_t o) { return _farpeekl(hsel, o); }
-static inline void w8 (uint32_t o, uint8_t v)  { _farpokeb(hsel, o, v); }
-static inline void w16(uint32_t o, uint16_t v) { _farpokew(hsel, o, v); }
-static inline void w32(uint32_t o, uint32_t v) { _farpokel(hsel, o, v); }
-
-static void io_delay(int n) { while (n--) inportb(0x80); }   /* ~1 us each */
+static inline uint8_t  r8 (uint32_t o) { return *(volatile uint8_t  *)(mmio + o); }
+static inline uint16_t r16(uint32_t o) { return *(volatile uint16_t *)(mmio + o); }
+static inline uint32_t r32(uint32_t o) { return *(volatile uint32_t *)(mmio + o); }
+static inline void w8 (uint32_t o, uint8_t v)  { *(volatile uint8_t  *)(mmio + o) = v; }
+static inline void w16(uint32_t o, uint16_t v) { *(volatile uint16_t *)(mmio + o) = v; }
+static inline void w32(uint32_t o, uint32_t v) { *(volatile uint32_t *)(mmio + o) = v; }
 
 static int wait_bits32(uint32_t off, uint32_t mask, uint32_t want, int us)
 {
@@ -57,18 +63,77 @@ static int wait_bits32(uint32_t off, uint32_t mask, uint32_t want, int us)
     return 0;
 }
 
+/* ---------------------------------------------------------------- XMS */
+
+static int xms_call(Client *c, uint8_t fn, uint16_t dx)
+{
+    c->EAX = (uint32_t)fn << 8;
+    c->EDX = dx;
+    jlm_nest_far_call(c, xms_entry);
+    return (c->EAX & 0xFFFF) == 1;
+}
+
+static int alloc_dma_memory(void)
+{
+    Client *c = jlm_client();
+
+    c->EAX = 0x4300;
+    jlm_nest_int(c, 0x2F);
+    if ((c->EAX & 0xFF) != 0x80) { jprintf("HDA: no XMS driver\n"); return 0; }
+    c->EAX = 0x4310;
+    jlm_nest_int(c, 0x2F);
+    xms_entry = (c->ES & 0xFFFF) << 16 | (c->EBX & 0xFFFF);
+
+    if (!xms_call(c, 0x09, DMA_BYTES / 1024 + 4)) { jprintf("HDA: XMS allocation failed\n"); return 0; }
+    xms_handle = c->EDX & 0xFFFF;
+    c->EDX = xms_handle;
+    if (!xms_call(c, 0x0C, xms_handle)) { jprintf("HDA: XMS lock failed\n"); return 0; }
+    xms_locked = 1;
+    dma_phys = ((c->EDX & 0xFFFF) << 16 | (c->EBX & 0xFFFF));
+    dma_phys = (dma_phys + 4095) & ~4095u;
+
+    dma_lin = jlm_page_reserve(PR_SYSTEM, DMA_PAGES, 0);
+    if (dma_lin == 0xFFFFFFFFu || dma_lin == 0) { dma_lin = 0; return 0; }
+    if (!jlm_page_commit_phys(dma_lin >> 12, DMA_PAGES, dma_phys >> 12, PC_INCR | PC_WRITEABLE))
+        return 0;
+    dma = (uint8_t *)dma_lin;
+    ring = (int16_t *)(dma + RING_OFF);
+    memset(dma, 0, DMA_BYTES);
+    return 1;
+}
+
+static void free_dma_memory(void)
+{
+    Client *c = jlm_client();
+    if (mmio) {                                         /* stop CORB/RIRB DMA first */
+        w8(0x4C, 0);
+        w8(0x5C, 0);
+        if (sd) w8(sd, 0);
+    }
+    if (dma_lin) { jlm_page_free(dma_lin, 0); dma_lin = 0; dma = 0; }
+    if (xms_handle) {
+        if (xms_locked) xms_call(c, 0x0D, xms_handle);
+        xms_call(c, 0x0A, xms_handle);
+        xms_handle = 0;
+        xms_locked = 0;
+    }
+    if (mmio_lin) { jlm_page_free(mmio_lin, 0); mmio_lin = 0; mmio = 0; }
+}
+
 /* ---------------------------------------------------------------- verbs */
 
 static int hda_cmd(uint32_t v, uint32_t *resp)
 {
+    volatile uint32_t *corb = (volatile uint32_t *)(dma + CORB_OFF);
+    volatile uint32_t *rirb = (volatile uint32_t *)(dma + RIRB_OFF);
     uint16_t wp = (r16(0x48) + 1) & 0xFF;
-    _farpokel(_dos_ds, corb_lin + wp * 4, v);
+    corb[wp] = v;
     w16(0x48, wp);
     for (int i = 0; i < 20000; i++) {
         uint16_t rwp = r16(0x58) & 0xFF;
         if (rwp != rirb_rp) {
             rirb_rp = (rirb_rp + 1) & 0xFF;
-            if (resp) *resp = _farpeekl(_dos_ds, rirb_lin + rirb_rp * 8);
+            if (resp) *resp = rirb[rirb_rp * 2];
             w8(0x5D, 0x05);
             return 1;
         }
@@ -170,85 +235,63 @@ static int setup_codec(int cad, uint8_t tag, uint16_t fmt)
             verb(cad, dac, 0x706, tag << 4);
             unmute_out(cad, dac);
             verb(cad, dac, 0x705, 0);
-            printf("HDA: codec %d pin %d -> DAC %d\n", cad, n, dac);
+            jprintf("HDA: codec %d pin %d -> DAC %d\n", cad, n, dac);
             any = 1;
         }
     }
     return any;
 }
 
-/* ---------------------------------------------------------------- memory */
-
-static int alloc_dma_memory(void)
-{
-    /* RIRB 2K (2K-aligned) | CORB 1K | BDL 128 | pad | ring 16K (4K offset) */
-    const unsigned need = 4096 + RING_FRAMES * 4;
-    int paras = (need + 2048 + 15) / 16;
-    int seg = __dpmi_allocate_dos_memory(paras, &dos_sel);
-    if (seg == -1) return 0;
-
-    unsigned long base = (unsigned long)seg * 16;
-    unsigned long a = (base + 2047) & ~2047ul;
-    rirb_lin = a;
-    corb_lin = a + 2048;
-    bdl_lin  = a + 3072;
-    ring_lin = a + 4096;
-
-    static const uint8_t zero[512];
-    for (unsigned long p = base; p < base + (unsigned long)paras * 16; p += sizeof zero)
-        dosmemput(zero, sizeof zero, p);
-    return 1;
-}
-
 /* ---------------------------------------------------------------- init */
 
 int hda_irq(void) { return irq_line; }
 
+static int fail(const char *msg)
+{
+    if (msg) jprintf("HDA: %s\n", msg);
+    free_dma_memory();
+    return 0;
+}
+
 int hda_init(void)
 {
     PciDev d;
-    if (!pci_find_class(0x04, 0x03, &d)) { printf("HDA: no controller\n"); return 0; }
+    if (!pci_find_class(0x04, 0x03, &d)) return fail("no controller");
 
     uint32_t bar = pci_read(d, 0x10);
-    if ((bar & 0x6) == 0x4 && pci_read(d, 0x14) != 0) {
-        printf("HDA: BAR above 4 GB\n");
-        return 0;
-    }
+    if ((bar & 0x6) == 0x4 && pci_read(d, 0x14) != 0) return fail("BAR above 4 GB");
     irq_line = pci_read(d, 0x3C) & 0xFF;
-    if (irq_line == 0 || irq_line > 15) { printf("HDA: no legacy IRQ\n"); return 0; }
+    if (irq_line == 0 || irq_line > 15) return fail("no legacy IRQ");
     pci_write(d, 0x04, (pci_read(d, 0x04) | 0x06) & ~0x400u);   /* mem + master, INTx on */
 
-    __dpmi_meminfo mi;
-    mi.address = bar & 0xFFFFFFF0;
-    mi.size = 0x4000;
-    if (__dpmi_physical_address_mapping(&mi) != 0) { printf("HDA: cannot map BAR\n"); return 0; }
-    hsel = __dpmi_allocate_ldt_descriptors(1);
-    if (hsel < 0) return 0;
-    __dpmi_set_segment_base_address(hsel, mi.address);
-    __dpmi_set_segment_limit(hsel, 0x3FFF);
+    mmio_lin = jlm_page_reserve(PR_SYSTEM, 4, 0);
+    if (mmio_lin == 0xFFFFFFFFu || mmio_lin == 0) { mmio_lin = 0; return fail("no address space"); }
+    if (!jlm_page_commit_phys(mmio_lin >> 12, 4, (bar & 0xFFFFF000u) >> 12, PC_INCR | PC_WRITEABLE))
+        return fail("cannot map BAR");
+    mmio = (volatile uint8_t *)(mmio_lin + (bar & 0xFF0));
 
-    if (!alloc_dma_memory()) { printf("HDA: out of conventional memory\n"); return 0; }
+    if (!alloc_dma_memory()) return fail(0);
 
     /* controller reset */
     w32(0x08, r32(0x08) & ~1u);
-    if (!wait_bits32(0x08, 1, 0, 100000)) return 0;
+    if (!wait_bits32(0x08, 1, 0, 100000)) return fail("reset timeout");
     w32(0x08, r32(0x08) | 1);
-    if (!wait_bits32(0x08, 1, 1, 100000)) return 0;
+    if (!wait_bits32(0x08, 1, 1, 100000)) return fail("reset timeout");
     io_delay(2000);
     uint16_t codecs = r16(0x0E);
-    if (!codecs) { printf("HDA: no codecs\n"); return 0; }
+    if (!codecs) return fail("no codecs");
 
     /* CORB / RIRB, 256 entries */
     w8(0x4C, 0); w8(0x5C, 0);
     io_delay(1000);
-    w32(0x40, corb_lin); w32(0x44, 0);
+    w32(0x40, dma_phys + CORB_OFF); w32(0x44, 0);
     w8(0x4E, 0x02);
     w16(0x48, 0);
     w16(0x4A, 0x8000);
     for (int i = 0; i < 1000 && !(r16(0x4A) & 0x8000); i++) io_delay(1);
     w16(0x4A, 0);
     for (int i = 0; i < 1000 && (r16(0x4A) & 0x8000); i++) io_delay(1);
-    w32(0x50, rirb_lin); w32(0x54, 0);
+    w32(0x50, dma_phys + RIRB_OFF); w32(0x54, 0);
     w8(0x5E, 0x02);
     w16(0x58, 0x8000);
     w16(0x5A, 0xFF);
@@ -258,7 +301,7 @@ int hda_init(void)
 
     uint16_t gcap = r16(0x00);
     int iss = (gcap >> 8) & 0xF, oss = (gcap >> 12) & 0xF;
-    if (!oss) { printf("HDA: no output streams\n"); return 0; }
+    if (!oss) return fail("no output streams");
     stream_index = iss;
     sd = 0x80 + iss * 0x20;
     const uint8_t tag = 1;
@@ -267,7 +310,7 @@ int hda_init(void)
     int routed = 0;
     for (int cad = 0; cad < 15; cad++)
         if (codecs & (1 << cad)) routed |= setup_codec(cad, tag, fmt);
-    if (!routed) { printf("HDA: no usable output pin\n"); return 0; }
+    if (!routed) return fail("no usable output pin");
 
     /* stream reset */
     w8(sd, r8(sd) | 1);
@@ -275,14 +318,14 @@ int hda_init(void)
     w8(sd, r8(sd) & ~1);
     for (int i = 0; i < 1000 && (r8(sd) & 1); i++) io_delay(1);
 
+    volatile uint32_t *bdl = (volatile uint32_t *)(dma + BDL_OFF);
     for (int i = 0; i < RING_BUFS; i++) {
-        unsigned long e = bdl_lin + i * 16;
-        _farpokel(_dos_ds, e + 0, ring_lin + i * CHUNK_FRAMES * 4);
-        _farpokel(_dos_ds, e + 4, 0);
-        _farpokel(_dos_ds, e + 8, CHUNK_FRAMES * 4);
-        _farpokel(_dos_ds, e + 12, 1);                  /* IOC */
+        bdl[i * 4 + 0] = dma_phys + RING_OFF + i * CHUNK_FRAMES * 4;
+        bdl[i * 4 + 1] = 0;
+        bdl[i * 4 + 2] = CHUNK_FRAMES * 4;
+        bdl[i * 4 + 3] = 1;                             /* IOC */
     }
-    w32(sd + 0x18, bdl_lin);
+    w32(sd + 0x18, dma_phys + BDL_OFF);
     w32(sd + 0x1C, 0);
     w32(sd + 0x08, RING_FRAMES * 4);
     w16(sd + 0x0C, RING_BUFS - 1);
@@ -303,24 +346,28 @@ static void refill(void)
     }
     while (ahead < TARGET_AHEAD) {
         int n = TARGET_AHEAD - ahead;
-        if (n > RENDER_MAX) n = RENDER_MAX;
         if (n > (int)(RING_FRAMES - write_pos)) n = RING_FRAMES - write_pos;
-        render(mixbuf, n);
-        dosmemput(mixbuf, n * 4, ring_lin + write_pos * 4);
+        render(&ring[write_pos * 2], n);
         write_pos = (write_pos + n) & RING_MASK;
         ahead += n;
     }
 }
 
-static void hda_isr(void)
+/* Called from irq_thunk. Returns 0 if the interrupt wasn't ours (shared line). */
+int hda_irq_service(void)
 {
-    uint8_t sts = r8(sd + 0x03);
-    if (sts & 0x04) {
-        w8(sd + 0x03, 0x04);                            /* ack BCIS */
-        refill();
-    }
-    if (irq_line >= 8) outportb(0xA0, 0x20);
-    outportb(0x20, 0x20);
+    if (!running || !(r8(sd + 0x03) & 0x04)) return 0;
+    w8(sd + 0x03, 0x04);                                /* ack BCIS */
+    refill();
+    if (irq_line >= 8) outb(0xA0, 0x20);
+    outb(0x20, 0x20);
+    return 1;
+}
+
+static uint32_t irq_ivt_addr(void)
+{
+    int vec = irq_line < 8 ? 0x08 + irq_line : 0x70 + irq_line - 8;
+    return (uint32_t)vec * 4;
 }
 
 int hda_start(hda_render_fn fn)
@@ -328,30 +375,32 @@ int hda_start(hda_render_fn fn)
     render = fn;
     write_pos = 0;
 
-    isr_vec = irq_line < 8 ? 0x08 + irq_line : 0x70 + irq_line - 8;
-    _go32_dpmi_get_protected_mode_interrupt_vector(isr_vec, &old_isr);
-    new_isr.pm_offset = (unsigned long)hda_isr;
-    new_isr.pm_selector = _go32_my_cs();
-    if (_go32_dpmi_allocate_iret_wrapper(&new_isr) != 0) return 0;
-    _go32_dpmi_set_protected_mode_interrupt_vector(isr_vec, &new_isr);
+    irq_callback = jlm_alloc_v86_callback(irq_thunk, 0);
+    if (!irq_callback) return 0;
+    irq_chain_vector = lin_peekl(irq_ivt_addr());
+    lin_pokel(irq_ivt_addr(), irq_callback);
 
-    disable();
     refill();
+    running = 1;
     w32(0x20, 0x80000000u | (1u << stream_index));     /* GIE + this stream */
     w8(sd, 0x02 | 0x04);                                /* run + IOCE */
     if (irq_line >= 8) {
-        outportb(0xA1, inportb(0xA1) & ~(1 << (irq_line - 8)));
-        outportb(0x21, inportb(0x21) & ~(1 << 2));      /* cascade */
+        outb(0xA1, inb(0xA1) & ~(1 << (irq_line - 8)));
+        outb(0x21, inb(0x21) & ~(1 << 2));              /* cascade */
     } else {
-        outportb(0x21, inportb(0x21) & ~(1 << irq_line));
+        outb(0x21, inb(0x21) & ~(1 << irq_line));
     }
-    enable();
     return 1;
 }
 
 void hda_stop(void)
 {
-    w8(sd, 0);
-    w32(0x20, 0);
-    _go32_dpmi_set_protected_mode_interrupt_vector(isr_vec, &old_isr);
+    if (running) {
+        running = 0;
+        w8(sd, 0);
+        w32(0x20, 0);
+        lin_pokel(irq_ivt_addr(), irq_chain_vector);
+        jlm_free_v86_callback(irq_callback);
+    }
+    free_dma_memory();
 }

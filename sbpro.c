@@ -1,27 +1,33 @@
-/* SBPRO - resident Sound Blaster Pro 2.0 emulator over Intel HD Audio.
+/* SBPRO.DLL - Sound Blaster Pro 2.0 emulation over Intel HD Audio.
  *
- * Needs: JEMM386/JEMMEX with QPIEMU.DLL loaded (or QEMM), and HDPMI32i
- * loaded resident (HDPMI32i -r) so this client's memory survives exit.
+ * A Jemm Loadable Module: runs inside JEMM386/JEMMEX at ring 0, traps the
+ * Sound Blaster ports itself and stays resident. Nothing else is needed.
  *
- * Usage: SBPRO [Axxx] [In] [Dn] [/T]
+ *   JLOAD SBPRO.DLL [Axxx] [In] [Dn] [/T]      load
+ *   JLOAD -u SBPRO.DLL                          unload
+ *
  *   /T  play a test tone instead of emulated output
  */
-#include <stdio.h>
-#include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
-#include <ctype.h>
-#include <dpmi.h>
-#include <go32.h>
-#include <crt0.h>
-#include <sys/farptr.h>
+#include "jlm.h"
 #include "hda.h"
-#include "qpi.h"
 #include "dsp.h"
 
-int _crt0_startup_flags = _CRT0_FLAG_LOCK_MEMORY;     /* everything touched at IRQ time */
+#define SBPRO_DEVICE_ID 0x7B50
+
+__attribute__((dllexport)) DDB ddb = {
+    .Req_Device_Number = SBPRO_DEVICE_ID,
+    .Dev_Major_Version = 0,
+    .Dev_Minor_Version = 3,
+    .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
+    .Init_Order = 0x80000000u,
+    .Size = sizeof(DDB),
+};
 
 static uint16_t sb_base = 0x220;
 static int sb_irq = 5, sb_dma = 1, test_tone;
+static int ports_trapped;
 
 /* ---------------------------------------------------------------- output */
 
@@ -31,7 +37,7 @@ static void render_tone(int16_t *out, int frames)
 {
     for (int i = 0; i < frames; i++) {
         tone_phase += (440u << 16) / HDA_RATE * 256;  /* 440 Hz, 24.8 fixed */
-        int32_t p = (tone_phase >> 8) & 0xFFFF;       /* 0..65535 */
+        int32_t p = (tone_phase >> 8) & 0xFFFF;
         int32_t tri = p < 32768 ? p * 2 - 32768 : 98303 - p * 2;
         int16_t s = (int16_t)(tri / 8);
         out[i * 2] = out[i * 2 + 1] = s;
@@ -46,100 +52,113 @@ static void render_sb(int16_t *out, int frames)
 
 /* ---------------------------------------------------------------- traps */
 
-static _go32_dpmi_seginfo trap_cb;
-static _go32_dpmi_registers trap_regs;
-
-static void io_trap(_go32_dpmi_registers *r)
+uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type)
 {
-    uint16_t port = r->x.dx;
-    if (r->h.cl & QPI_IO_OUT) {
-        dsp_out(port, r->h.al);
-    } else {
-        uint8_t v = dsp_in(port);
-        if (r->h.cl & QPI_IO_WORD) r->x.ax = v | 0xFF00;
-        else r->h.al = v;
+    if (type & IO_OUTPUT) {
+        dsp_out((uint16_t)port, (uint8_t)data);
+        return data;
     }
+    uint8_t v = dsp_in((uint16_t)port);
+    if (type & (IO_WORD | IO_DWORD)) return (data & 0xFFFF0000u) | 0xFF00u | v;
+    return (data & 0xFFFFFF00u) | v;
 }
 
-static int install_traps(void)
+static void untrap_ports(void)
 {
-    trap_cb.pm_offset = (unsigned long)io_trap;
-    if (_go32_dpmi_allocate_real_mode_callback_retf(&trap_cb, &trap_regs) != 0) return 0;
-    if (!qpi_set_io_callback(trap_cb.rm_segment, trap_cb.rm_offset)) return 0;
     for (uint16_t p = sb_base; p < sb_base + 0x10; p++)
-        if (dsp_owns(p) && !qpi_trap_port(p)) return 0;
+        if (ports_trapped && dsp_owns(p)) jlm_remove_io(p);
+    ports_trapped = 0;
+}
+
+static int trap_ports(void)
+{
+    for (uint16_t p = sb_base; p < sb_base + 0x10; p++) {
+        if (!dsp_owns(p)) continue;
+        if (!jlm_install_io(p, io_thunk)) {
+            jprintf("SBPRO: port %X is already trapped by another driver\n", p);
+            for (uint16_t q = sb_base; q < p; q++)
+                if (dsp_owns(q)) jlm_remove_io(q);
+            return 0;
+        }
+    }
+    ports_trapped = 1;
     return 1;
 }
 
-/* ---------------------------------------------------------------- resident */
+/* ---------------------------------------------------------------- load */
 
-static void go_resident(void)
+static uint32_t hex(const char **s)
 {
-    unsigned long psp = _go32_info_block.linear_address_of_original_psp;
-    uint16_t paras = _farpeekw(_dos_ds, psp - 16 + 3);  /* size from the PSP's MCB */
-    fflush(stdout);
-    /* Issued from protected mode so HDPMI keeps this client alive. */
-    __asm__ __volatile__("int $0x21" : : "a"(0x3100), "d"(paras));
+    uint32_t v = 0;
+    for (;; (*s)++) {
+        char c = **s;
+        if (c >= '0' && c <= '9') v = v * 16 + c - '0';
+        else if ((c | 0x20) >= 'a' && (c | 0x20) <= 'f') v = v * 16 + (c | 0x20) - 'a' + 10;
+        else return v;
+    }
 }
 
-/* ---------------------------------------------------------------- main */
-
-static void parse_args(int argc, char **argv)
+static uint32_t dec(const char **s)
 {
-    for (int i = 1; i < argc; i++) {
-        char *a = argv[i];
-        switch (toupper((unsigned char)a[0])) {
-        case 'A': sb_base = (uint16_t)strtoul(a + 1, NULL, 16); break;
-        case 'I': sb_irq = atoi(a + 1); break;
-        case 'D': sb_dma = atoi(a + 1); break;
+    uint32_t v = 0;
+    while (**s >= '0' && **s <= '9') v = v * 10 + *(*s)++ - '0';
+    return v;
+}
+
+static void parse_args(const char *s)
+{
+    while (*s && *s != '\r' && *s != '\n') {
+        char c = *s++;
+        switch (c | 0x20) {
+        case 'a': sb_base = (uint16_t)hex(&s); break;
+        case 'i': sb_irq = dec(&s); break;
+        case 'd': sb_dma = dec(&s); break;
         case '/': case '-':
-            if (toupper((unsigned char)a[1]) == 'T') test_tone = 1;
+            if ((*s | 0x20) == 't') { test_tone = 1; s++; }
             break;
         }
     }
 }
 
-static int host_is_cwsdpmi(void)
+static int load(JLCOMM *jc)
 {
-    int flags;
-    char info[128];
-    memset(info, 0, sizeof info);
-    if (__dpmi_get_capabilities(&flags, info) != 0) return 0;
-    info[sizeof info - 1] = 0;
-    return strstr(info + 2, "CWSDPMI") != NULL;       /* vendor name after 2 version bytes */
+    parse_args((const char *)jc->lpCmdLine);
+    jprintf("SBPRO: Sound Blaster Pro 2.0 emulation over HD Audio\n");
+
+    if (!hda_init()) return 0;
+    dsp_init(sb_base);
+    if (!trap_ports()) { hda_stop(); return 0; }
+    if (!hda_start(test_tone ? render_tone : render_sb)) {
+        jprintf("SBPRO: no V86 callback left for the HDA IRQ\n");
+        untrap_ports();
+        hda_stop();
+        return 0;
+    }
+
+    jprintf("SBPRO: HDA IRQ %d. Emulating A%X I%d D%d%s\n", hda_irq(), sb_base, sb_irq, sb_dma,
+            test_tone ? " (test tone)" : "");
+    jprintf("SET BLASTER=A%X I%d D%d T4\n", sb_base, sb_irq, sb_dma);
+    return 1;
 }
 
-int main(int argc, char **argv)
+static int unload(void)
 {
-    parse_args(argc, argv);
-    printf("SBPRO: Sound Blaster Pro 2.0 emulation over HD Audio\n");
+    untrap_ports();
+    hda_stop();
+    jprintf("SBPRO: unloaded\n");
+    return 1;
+}
 
-    if (host_is_cwsdpmi()) {
-        printf("Running under CWSDPMI, which can't keep a TSR resident.\n"
-               "Load HDPMI32i -r first.\n");
-        return 1;
-    }
+int __stdcall DllMain(void *module, uint32_t reason, JLCOMM *jc)
+{
+    (void)module;
+    Client *c = jlm_client();
+    Client saved = *c;                  /* nested DOS/XMS calls change client regs */
+    int ok = 0;
 
-    if (!qpi_detect()) {
-        printf("QPI not found. Load JEMM386/JEMMEX and JLOAD QPIEMU.DLL.\n");
-        return 1;
-    }
-    printf("QPI version %x.%02x\n", qpi_version() >> 8, qpi_version() & 0xFF);
+    if (reason == 1) ok = load(jc);
+    else if (reason == 0) ok = unload();
 
-    if (!hda_init()) return 1;
-    dsp_init(sb_base);
-    if (!install_traps()) {
-        printf("Could not trap ports at %Xh\n", sb_base);
-        return 1;
-    }
-    if (!hda_start(test_tone ? render_tone : render_sb)) {
-        printf("Could not install HDA IRQ %d handler\n", hda_irq());
-        return 1;
-    }
-
-    printf("HDA IRQ %d. Emulating A%X I%d D%d%s\n", hda_irq(), sb_base, sb_irq, sb_dma,
-           test_tone ? " (test tone)" : "");
-    printf("SET BLASTER=A%X I%d D%d T4\n", sb_base, sb_irq, sb_dma);
-    go_resident();
-    return 0;
+    *c = saved;
+    return ok;
 }
