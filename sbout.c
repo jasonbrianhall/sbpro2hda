@@ -1,0 +1,186 @@
+/* Sound Blaster Pro playback engine.
+ *
+ * DMA: Jemm passes the game's 8237 programming through to the (emulated or
+ * real) DMA controller. Nothing ever requests DMA on the Sound Blaster's
+ * channel, so its address/count registers keep what the game wrote, and we
+ * read them back when a transfer starts. If Jemm had to redirect the
+ * transfer to its own DMA buffer, the controller holds that buffer's
+ * address instead, which is exactly where the data is.
+ *
+ * Playback runs inside the HDA interrupt: every rendered 48 kHz frame
+ * advances the SB stream by rate/48000 samples. When a DSP block finishes,
+ * the virtual IRQ is flagged and injected as the HDA interrupt returns.
+ */
+#include <string.h>
+#include "io.h"
+#include "jlm.h"
+#include "dsp.h"
+#include "hda.h"
+#include "sbout.h"
+
+#define WINDOW_PAGES 17                     /* 64 KB + one page of slack */
+
+static int sb_irq = 5, sb_dma = 1;
+static volatile int irq_pending;
+
+static struct {
+    int active, autoinit, silence;
+    uint32_t dma_phys, dma_len, dma_pos;
+    const volatile uint8_t *mem;
+    uint32_t block_len, block_left;
+    uint32_t step, frac;
+    int stereo;
+    int16_t prev_l, prev_r, cur_l, cur_r;
+} s;
+
+static uint32_t window_lin;                 /* for buffers outside conventional memory */
+static int window_committed;
+
+static const uint8_t page_port[4] = { 0x87, 0x83, 0x81, 0x82 };
+
+void sb_out_init(int irq, int dma)
+{
+    sb_irq = irq;
+    sb_dma = dma & 3;
+    memset(&s, 0, sizeof s);
+}
+
+int sb_out_map_init(void)
+{
+    window_lin = jlm_page_reserve(PR_SYSTEM, WINDOW_PAGES, 0);
+    if (window_lin == 0xFFFFFFFFu || window_lin == 0) { window_lin = 0; return 0; }
+    return 1;
+}
+
+/* ---------------------------------------------------------------- DMA */
+
+static void read_dma_controller(void)
+{
+    uint16_t aport = sb_dma * 2, cport = sb_dma * 2 + 1;
+    uint32_t lo, hi;
+
+    outb(0x0C, 0);                          /* clear flip-flop */
+    lo = inb(aport); hi = inb(aport);
+    uint32_t addr = hi << 8 | lo;
+    outb(0x0C, 0);
+    lo = inb(cport); hi = inb(cport);
+    uint32_t count = hi << 8 | lo;
+    outb(0x0C, 0);
+    uint32_t page = inb(page_port[sb_dma]);
+
+    s.dma_phys = page << 16 | addr;
+    s.dma_len = count + 1;
+    s.dma_pos = 0;
+}
+
+static int map_dma_buffer(void)
+{
+    if (s.dma_phys + s.dma_len <= 0xA0000) {             /* conventional memory: 1:1 */
+        s.mem = (const volatile uint8_t *)s.dma_phys;
+        return 1;
+    }
+    if (!window_lin) return 0;
+    uint32_t first = s.dma_phys >> 12;
+    uint32_t pages = ((s.dma_phys & 0xFFF) + s.dma_len + 4095) >> 12;
+    if (pages > WINDOW_PAGES) pages = WINDOW_PAGES;
+    if (window_committed) jlm_page_decommit(window_lin >> 12, WINDOW_PAGES, 0);
+    window_committed = jlm_page_commit_phys(window_lin >> 12, pages, first, PC_INCR | PC_WRITEABLE) != 0;
+    if (!window_committed) return 0;
+    s.mem = (const volatile uint8_t *)(window_lin + (s.dma_phys & 0xFFF));
+    return 1;
+}
+
+/* ---------------------------------------------------------------- control */
+
+void sb_out_start(int autoinit, uint32_t len_bytes, int silence)
+{
+    uint32_t tc = dsp.time_constant;
+    uint32_t rate = 1000000u / (256 - tc);
+
+    s.stereo = (dsp.mixer[0x0E] & 0x02) && !silence;
+    if (s.stereo) rate /= 2;                /* TC was set for twice the frame rate */
+    if (rate < 1000) rate = 1000;
+    if (rate > 48000) rate = 48000;
+    s.step = (rate << 16) / HDA_RATE;
+    s.frac = 0;
+
+    s.silence = silence;
+    s.autoinit = autoinit;
+    s.block_len = len_bytes ? len_bytes : 1;
+    s.block_left = s.block_len;
+
+    if (!silence) {
+        read_dma_controller();
+        if (!map_dma_buffer()) { s.active = 0; return; }
+    }
+    s.active = 1;
+}
+
+void sb_out_stop(void)            { s.active = 0; irq_pending = 0; }
+void sb_out_exit_autoinit(void)   { s.autoinit = 0; }
+void sb_out_raise_irq(void)       { irq_pending = 1; }
+
+/* ---------------------------------------------------------------- render */
+
+static uint8_t fetch(void)
+{
+    uint8_t b = 0x80;
+    if (!s.silence) {
+        b = s.mem[s.dma_pos];
+        if (++s.dma_pos >= s.dma_len) s.dma_pos = 0;     /* 8237 auto-init wrap */
+    }
+    if (--s.block_left == 0) {
+        irq_pending = 1;
+        if (s.autoinit) s.block_left = s.block_len;
+        else s.active = 0;
+    }
+    return b;
+}
+
+static void next_frame(void)
+{
+    s.prev_l = s.cur_l;
+    s.prev_r = s.cur_r;
+    int16_t l = (int16_t)(((int)fetch() - 128) * 256);
+    int16_t r = l;
+    if (s.stereo && s.active) r = (int16_t)(((int)fetch() - 128) * 256);
+    s.cur_l = l;
+    s.cur_r = r;
+}
+
+void sb_render(int16_t *out, int frames)
+{
+    for (int i = 0; i < frames; i++) {
+        int32_t l, r;
+        if (s.active && !dsp.paused) {
+            s.frac += s.step;
+            while (s.frac >= 0x10000 && s.active) {
+                s.frac -= 0x10000;
+                next_frame();
+            }
+            int32_t f = s.frac;                          /* linear interpolation */
+            l = s.prev_l + (((s.cur_l - s.prev_l) * f) >> 16);
+            r = s.prev_r + (((s.cur_r - s.prev_r) * f) >> 16);
+        } else {
+            l = r = ((int32_t)dsp.dac_value - 128) * 256;  /* direct DAC (10h) */
+        }
+        if (!dsp.speaker) l = r = 0;
+        out[i * 2] = (int16_t)l;
+        out[i * 2 + 1] = (int16_t)r;
+    }
+}
+
+/* ---------------------------------------------------------------- IRQ */
+
+int sb_pending_vector(void)
+{
+    if (!irq_pending) return 0;
+    if (sb_irq < 8) {
+        if (inb(0x21) & (1 << sb_irq)) return 0;         /* masked: keep it pending */
+        irq_pending = 0;
+        return 0x08 + sb_irq;
+    }
+    if ((inb(0xA1) & (1 << (sb_irq - 8))) || (inb(0x21) & 0x04)) return 0;
+    irq_pending = 0;
+    return 0x70 + sb_irq - 8;
+}

@@ -57,6 +57,7 @@ void     jlm_nest_int(Client *c, int intno);
 void     jlm_nest_far_call(Client *c, uint32_t segoff);
 uint32_t jlm_page_reserve(uint32_t page, uint32_t npages, uint32_t flags);
 uint32_t jlm_page_commit_phys(uint32_t page, uint32_t npages, uint32_t physpage, uint32_t flags);
+uint32_t jlm_page_decommit(uint32_t page, uint32_t npages, uint32_t flags);
 uint32_t jlm_page_free(uint32_t lin, uint32_t flags);
 int      jlm_install_io(uint16_t port, void (*handler)(void));
 int      jlm_remove_io(uint16_t port);

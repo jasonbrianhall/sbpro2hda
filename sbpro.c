@@ -13,13 +13,14 @@
 #include "jlm.h"
 #include "hda.h"
 #include "dsp.h"
+#include "sbout.h"
 
 #define SBPRO_DEVICE_ID 0x7B50
 
 __attribute__((dllexport)) DDB ddb = {
     .Req_Device_Number = SBPRO_DEVICE_ID,
     .Dev_Major_Version = 0,
-    .Dev_Minor_Version = 3,
+    .Dev_Minor_Version = 4,
     .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
     .Init_Order = 0x80000000u,
     .Size = sizeof(DDB),
@@ -44,12 +45,6 @@ static void render_tone(int16_t *out, int frames)
     }
 }
 
-static void render_sb(int16_t *out, int frames)
-{
-    /* Step 3 replaces this with the DMA-fed DSP output plus OPL3. */
-    memset(out, 0, frames * 4);
-}
-
 /* ---------------------------------------------------------------- traps */
 
 uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type)
@@ -63,21 +58,34 @@ uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type)
     return (data & 0xFFFFFF00u) | v;
 }
 
+/* Every port we emulate: the SB block plus the AdLib ports. */
+static int port_list(uint16_t *out)
+{
+    int n = 0;
+    for (uint16_t p = sb_base; p < sb_base + 0x10; p++)
+        if (dsp_owns(p)) out[n++] = p;
+    for (uint16_t p = 0x388; p < 0x38C; p++)
+        if (dsp_owns(p)) out[n++] = p;
+    return n;
+}
+
 static void untrap_ports(void)
 {
-    for (uint16_t p = sb_base; p < sb_base + 0x10; p++)
-        if (ports_trapped && dsp_owns(p)) jlm_remove_io(p);
+    uint16_t ports[24];
+    int n = port_list(ports);
+    if (ports_trapped)
+        for (int i = 0; i < n; i++) jlm_remove_io(ports[i]);
     ports_trapped = 0;
 }
 
 static int trap_ports(void)
 {
-    for (uint16_t p = sb_base; p < sb_base + 0x10; p++) {
-        if (!dsp_owns(p)) continue;
-        if (!jlm_install_io(p, io_thunk)) {
-            jprintf("SBPRO: port %X is already trapped by another driver\n", p);
-            for (uint16_t q = sb_base; q < p; q++)
-                if (dsp_owns(q)) jlm_remove_io(q);
+    uint16_t ports[24];
+    int n = port_list(ports);
+    for (int i = 0; i < n; i++) {
+        if (!jlm_install_io(ports[i], io_thunk)) {
+            jprintf("SBPRO: port %X is already trapped by another driver\n", ports[i]);
+            while (i--) jlm_remove_io(ports[i]);
             return 0;
         }
     }
@@ -126,9 +134,16 @@ static int load(JLCOMM *jc)
     jprintf("SBPRO: Sound Blaster Pro 2.0 emulation over HD Audio\n");
 
     if (!hda_init()) return 0;
+    if (hda_irq() == sb_irq) {
+        jprintf("SBPRO: HD Audio uses IRQ %d; pick another SB IRQ (e.g. I7)\n", sb_irq);
+        hda_stop();
+        return 0;
+    }
+    sb_out_init(sb_irq, sb_dma);
+    if (!sb_out_map_init()) jprintf("SBPRO: warning, DMA buffers above 640K won't play\n");
     dsp_init(sb_base);
     if (!trap_ports()) { hda_stop(); return 0; }
-    if (!hda_start(test_tone ? render_tone : render_sb)) {
+    if (!hda_start(test_tone ? render_tone : sb_render)) {
         jprintf("SBPRO: no V86 callback left for the HDA IRQ\n");
         untrap_ports();
         hda_stop();

@@ -16,7 +16,9 @@
 #define Install_IO_Handler      31
 #define Remove_IO_Handler       34
 #define PageReserve             39
+#define PageDecommit            41
 #define PageCommitPhys          42
+#define Simulate_Int            9
 #define Free_V86_Call_Back      43
 
         .text
@@ -75,6 +77,16 @@ _jlm_page_commit_phys:
         pushl   16(%esp)
         VMM(PageCommitPhys)
         addl    $16, %esp
+        ret
+
+/* uint32_t jlm_page_decommit(page, npages, flags) */
+        .globl  _jlm_page_decommit
+_jlm_page_decommit:
+        pushl   12(%esp)
+        pushl   12(%esp)
+        pushl   12(%esp)
+        VMM(PageDecommit)
+        addl    $12, %esp
         ret
 
 /* uint32_t jlm_page_free(lin, flags) */
@@ -145,8 +157,12 @@ _irq_thunk:
         call    _hda_irq_service
         testl   %eax, %eax
         jz      1f
-        VMM(Simulate_Iret)
-        ret
+        VMM(Simulate_Iret)              /* back to the interrupted code... */
+        call    _sb_pending_vector
+        testl   %eax, %eax
+        jz      2f
+        VMM(Simulate_Int)               /* ...which first takes the SB IRQ */
+2:      ret
 1:      movzwl  _irq_chain_vector, %edx         /* not ours: continue at old vector */
         movzwl  _irq_chain_vector+2, %ecx
         VMM(Simulate_Far_Jmp)

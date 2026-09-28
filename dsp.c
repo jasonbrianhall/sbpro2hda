@@ -1,5 +1,8 @@
-/* Sound Blaster Pro 2.0 DSP and mixer.
+/* Sound Blaster Pro 2.0 DSP, mixer and FM chip status.
  *
+ *  base+0..3, base+8..9, 388h..38Bh   FM (OPL3). Only the status/timer
+ *                                     behaviour is emulated for now, so
+ *                                     AdLib detection succeeds; no synthesis.
  *  base+4  mixer index      base+5  mixer data
  *  base+6  DSP reset        base+A  DSP read data
  *  base+C  DSP write / write-buffer status
@@ -7,15 +10,16 @@
  */
 #include <string.h>
 #include "dsp.h"
+#include "sbout.h"
 
 DspState dsp;
-void (*dsp_irq_request)(void);
 
 static uint16_t base;
 static uint8_t outq[16];
 static uint8_t qhead, qtail;
 static uint8_t cmd, nargs, argi, args[2];
 static uint8_t reset_latch, test_reg, mix_index;
+static uint8_t fm_index, fm_status, fm_timer_ctl;
 
 static void q_clear(void) { qhead = qtail = 0; }
 static void q_push(uint8_t v)
@@ -44,9 +48,10 @@ static void dsp_reset(void)
 {
     q_clear();
     nargs = argi = 0;
-    dsp.pending = DSP_STOP_AUTO;
+    sb_out_stop();
     dsp.paused = 0;
     dsp.speaker = 0;
+    dsp.dac_value = 0x80;
     q_push(0xAA);
 }
 
@@ -65,32 +70,28 @@ static int arg_count(uint8_t c)
 
 static void exec(void)
 {
-    uint16_t w = args[0] | (args[1] << 8);
+    uint32_t w = (uint32_t)(args[0] | (args[1] << 8)) + 1;
     switch (cmd) {
     case 0x10: dsp.dac_value = args[0]; break;
-    case 0x14: case 0x91: /* 91h: high-speed single-cycle, uses 48h length */
-        dsp.sc_len = cmd == 0x14 ? w : dsp.block_len;
-        dsp.pending = DSP_START_SINGLE;
+    case 0x14: sb_out_start(0, w, 0); break;                     /* 8-bit single-cycle */
+    case 0x91: sb_out_start(0, dsp.block_len + 1u, 0); break;    /* high-speed single */
+    case 0x1C: case 0x90:                                        /* auto-init (+high-speed) */
+        sb_out_start(1, dsp.block_len + 1u, 0);
         break;
-    case 0x1C: case 0x90:
-        dsp.pending = DSP_START_AUTO;
-        break;
+    case 0x80: sb_out_start(0, w, 1); break;                     /* silence block */
     case 0x40: dsp.time_constant = args[0]; break;
-    case 0x48: dsp.block_len = w; break;
-    case 0x80: break;           /* silence block: needs IRQ timing, step 3 */
+    case 0x48: dsp.block_len = args[0] | (args[1] << 8); break;
     case 0xD0: dsp.paused = 1; break;
     case 0xD4: dsp.paused = 0; break;
     case 0xD1: dsp.speaker = 1; break;
     case 0xD3: dsp.speaker = 0; break;
     case 0xD8: q_push(dsp.speaker ? 0xFF : 0x00); break;
-    case 0xDA: dsp.pending = DSP_STOP_AUTO; break;
+    case 0xDA: sb_out_exit_autoinit(); break;
     case 0xE0: q_push((uint8_t)~args[0]); break;
     case 0xE1: q_push(0x03); q_push(0x02); break;
     case 0xE4: test_reg = args[0]; break;
     case 0xE8: q_push(test_reg); break;
-    case 0xF2: case 0xF3:
-        if (dsp_irq_request) dsp_irq_request();
-        break;
+    case 0xF2: case 0xF3: sb_out_raise_irq(); break;
     case 0xF8: q_push(0x00); break;
     default: break;             /* ADPCM, MIDI etc.: accepted and ignored */
     }
@@ -106,8 +107,34 @@ void dsp_init(uint16_t b)
     q_clear();
 }
 
+/* ---------------------------------------------------------------- FM */
+
+static int fm_index_port(uint16_t p)
+{
+    return p == 0x388 || p == 0x38A || p == base + 0 || p == base + 2 || p == base + 8;
+}
+
+static int fm_data_port(uint16_t p)
+{
+    return p == 0x389 || p == 0x38B || p == base + 1 || p == base + 3 || p == base + 9;
+}
+
+static void fm_write(uint8_t reg, uint8_t v)
+{
+    if (reg != 0x04) return;
+    if (v & 0x80) { fm_status = 0; return; }             /* reset IRQ flags */
+    fm_timer_ctl = v;
+    /* Timers "expire" at once: detection starts a timer, waits ~80 us and
+       expects the flag. Masked timers never set their flag. */
+    if ((v & 0x01) && !(v & 0x40)) fm_status |= 0xC0;
+    if ((v & 0x02) && !(v & 0x20)) fm_status |= 0xA0;
+}
+
+/* ---------------------------------------------------------------- ports */
+
 int dsp_owns(uint16_t port)
 {
+    if (fm_index_port(port) || fm_data_port(port)) return 1;
     switch (port - base) {
     case 0x4: case 0x5: case 0x6: case 0xA: case 0xC: case 0xE: return 1;
     default: return 0;
@@ -116,6 +143,8 @@ int dsp_owns(uint16_t port)
 
 uint8_t dsp_in(uint16_t port)
 {
+    if (fm_index_port(port)) return fm_status;          /* OPL3: low bits read 0 */
+    if (fm_data_port(port)) return 0xFF;
     switch (port - base) {
     case 0x5: return dsp.mixer[mix_index];
     case 0xA: return q_pop();
@@ -127,6 +156,8 @@ uint8_t dsp_in(uint16_t port)
 
 void dsp_out(uint16_t port, uint8_t v)
 {
+    if (fm_index_port(port)) { fm_index = v; return; }
+    if (fm_data_port(port)) { fm_write(fm_index, v); return; }
     switch (port - base) {
     case 0x4:
         mix_index = v;

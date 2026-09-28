@@ -1,8 +1,8 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.3
+VERSION=0.4
 
 # Source files
-SRCS = sbpro.c hda.c pci.c dsp.c libc.c jlm.S
+SRCS = sbpro.c hda.c pci.c dsp.c sbout.c libc.c jlm.S
 
 # Output module
 DLL_TARGET = sbpro.dll
