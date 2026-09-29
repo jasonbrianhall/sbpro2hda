@@ -235,6 +235,31 @@ start:
         and al, ~(1 << IRQ)
         out 21h, al
 
+; ---- 10. interrupt a sound: D0h (pause), then start a new one
+        mov cx, 4000
+        call setup_dma
+        mov al, 14h
+        call dsp_write
+        mov ax, 3999
+        call dsp_write
+        mov al, ah
+        call dsp_write
+        mov al, 0D0h
+        call dsp_write
+        mov cx, 400
+        call setup_dma
+        mov byte [got_irq], 0
+        mov al, 14h
+        call dsp_write
+        mov ax, 399
+        call dsp_write
+        mov al, ah
+        call dsp_write
+        call wait_irq_long
+        mov si, msg_d0
+        call puts
+        call put_result
+
 ; ---- restore
         cli
         xor ax, ax
@@ -441,7 +466,7 @@ puthex: push ax
         pop ax
         ret
 
-msg_hello       db "SBTEST", 13, 10, 0
+msg_hello       db "SBTEST 0.10", 13, 10, 0
 msg_reset_to    db "reset: TIMEOUT", 13, 10, 0
 msg_reset       db "reset: ", 0
 msg_ver         db "version: ", 0
@@ -457,6 +482,7 @@ msg_auto        db "auto-init IRQs in 3 s (want 03): ", 0
 msg_adlib_yes   db "AdLib: detected", 13, 10, 0
 msg_adlib_no    db "AdLib: NOT detected", 13, 10, 0
 msg_mask        db "IRQ with absolute PIC mask: ", 0
+msg_d0          db "new sound after D0h pause: ", 0
 msg_yes         db "yes", 13, 10, 0
 msg_no          db "NO", 13, 10, 0
 msg_bye         db "done", 13, 10, 0

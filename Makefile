@@ -1,5 +1,5 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.9
+VERSION=0.10
 
 # Source files
 SRCS = sbpro.c hda.c pci.c dsp.c sbout.c pic.c libc.c jlm.S

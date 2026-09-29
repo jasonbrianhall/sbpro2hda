@@ -113,6 +113,7 @@ void sb_out_start(int autoinit, uint32_t len_bytes, int silence)
     s.frac = 0;
 
     s.silence = silence;
+    dsp.paused = 0;                         /* a new transfer ends a D0h pause */
     s.autoinit = autoinit;
     s.block_len = len_bytes ? len_bytes : 1;
     s.block_left = s.block_len;
