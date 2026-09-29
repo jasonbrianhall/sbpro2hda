@@ -15,13 +15,14 @@
 #include "hda.h"
 #include "dsp.h"
 #include "sbout.h"
+#include "pic.h"
 
 #define SBPRO_DEVICE_ID 0x7B50
 
 __attribute__((dllexport)) DDB ddb = {
     .Req_Device_Number = SBPRO_DEVICE_ID,
     .Dev_Major_Version = 0,
-    .Dev_Minor_Version = 8,
+    .Dev_Minor_Version = 9,
     .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
     .Init_Order = 0x80000000u,
     .Size = sizeof(DDB),
@@ -68,13 +69,14 @@ uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type)
 {
     uint16_t p = (uint16_t)port;
     if (type & IO_OUTPUT) {
-        log_io(port, data & 0xFF, 1);
-        if (sb_dma_owns(p)) sb_dma_out(p, (uint8_t)data);
+        if (!pic_owns(p) || (p & 1)) log_io(port, data & 0xFF, 1);   /* skip EOIs */
+        if (pic_owns(p)) pic_out(p, (uint8_t)data);
+        else if (sb_dma_owns(p)) sb_dma_out(p, (uint8_t)data);
         else dsp_out(p, (uint8_t)data);
         return data;
     }
-    uint8_t v = sb_dma_owns(p) ? sb_dma_in(p) : dsp_in(p);
-    log_io(port, v, 0);
+    uint8_t v = pic_owns(p) ? pic_in(p) : sb_dma_owns(p) ? sb_dma_in(p) : dsp_in(p);
+    if (!pic_owns(p)) log_io(port, v, 0);
     if (type & (IO_WORD | IO_DWORD)) return (data & 0xFFFF0000u) | 0xFF00u | v;
     return (data & 0xFFFFFF00u) | v;
 }
@@ -96,8 +98,16 @@ static const uint16_t dma_ports_template[3] = { 0, 1, 0x08 };
 static uint16_t dma_ports[3];
 static int dma_trapped;
 
+static const uint16_t pic_ports[4] = { 0x20, 0x21, 0xA0, 0xA1 };
+static int pic_trapped;
+
 static void untrap_ports(void)
 {
+    if (pic_trapped) {
+        for (int i = 0; i < 4; i++) jlm_remove_io(pic_ports[i]);
+        pic_restore();
+        pic_trapped = 0;
+    }
     uint16_t ports[24];
     int n = port_list(ports);
     if (ports_trapped)
@@ -119,6 +129,16 @@ static int trap_ports(void)
         }
     }
     ports_trapped = 1;
+
+    pic_init(hda_irq());
+    for (pic_trapped = 0; pic_trapped < 4; pic_trapped++)
+        if (!jlm_install_io(pic_ports[pic_trapped], io_thunk)) break;
+    if (pic_trapped < 4) {
+        for (int i = 0; i < pic_trapped; i++) jlm_remove_io(pic_ports[i]);
+        pic_trapped = 0;
+        jprintf("SBPRO: warning, can't watch the interrupt controller;\n"
+                "       games that rewrite the IRQ mask will stop the sound\n");
+    }
 
     /* Before 5.84, JLOAD keeps Jemm's own DMA handlers in its trap table
        and removing a handler there can leave a dangling entry: don't try. */

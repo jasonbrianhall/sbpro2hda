@@ -17,6 +17,7 @@
 #include "dsp.h"
 #include "hda.h"
 #include "sbout.h"
+#include "pic.h"
 
 #define WINDOW_PAGES 17                     /* 64 KB + one page of slack */
 
@@ -124,8 +125,11 @@ void sb_out_start(int autoinit, uint32_t len_bytes, int silence)
             return;
         }
     }
-    dbg("SB: start %s len=%u rate=%u%s dma=%X/%u\n", autoinit ? "auto" : "single",
+    dbg("SB: start %s len=%u rate=%u%s dma=%X/%u", autoinit ? "auto" : "single",
         s.block_len, rate, s.stereo ? " stereo" : "", s.dma_phys, s.dma_len);
+    if (!silence && s.dma_len >= 4)
+        dbg(" data %2X %2X %2X %2X", s.mem[0], s.mem[1], s.mem[2], s.mem[3]);
+    dbg("\n");
 
     /* Detection transfers (a few bytes) finish in microseconds on a real
        card; complete them now so the IRQ arrives before any timeout. */
@@ -251,14 +255,8 @@ uint8_t sb_dma_in(uint16_t port)
 int sb_pending_vector(void)
 {
     if (!irq_pending) return 0;
-    int vec;
-    if (sb_irq < 8) {
-        if (inb(0x21) & (1 << sb_irq)) return 0;         /* masked: keep it pending */
-        vec = 0x08 + sb_irq;
-    } else {
-        if ((inb(0xA1) & (1 << (sb_irq - 8))) || (inb(0x21) & 0x04)) return 0;
-        vec = 0x70 + sb_irq - 8;
-    }
+    if (pic_masked(sb_irq)) return 0;                     /* masked: keep it pending */
+    int vec = sb_irq < 8 ? 0x08 + sb_irq : 0x70 + sb_irq - 8;
     irq_pending = 0;
     dbg("SB: IRQ %d -> int %X\n", sb_irq, vec);
     return vec;

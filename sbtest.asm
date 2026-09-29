@@ -215,6 +215,26 @@ start:
         mov si, msg_adlib_yes
 .fmr:   call puts
 
+; ---- 9. game writes an absolute PIC mask (only IRQ 0, 1, 5 open)
+        mov al, 0DCh
+        out 21h, al
+        mov cx, 4000
+        call setup_dma
+        mov byte [got_irq], 0
+        mov al, 14h
+        call dsp_write
+        mov ax, 3999
+        call dsp_write
+        mov al, ah
+        call dsp_write
+        call wait_irq_long
+        mov si, msg_mask
+        call puts
+        call put_result
+        mov al, [old_mask]
+        and al, ~(1 << IRQ)
+        out 21h, al
+
 ; ---- restore
         cli
         xor ax, ax
@@ -436,6 +456,7 @@ msg_cnt_end     db "DMA count at end: ", 0
 msg_auto        db "auto-init IRQs in 3 s (want 03): ", 0
 msg_adlib_yes   db "AdLib: detected", 13, 10, 0
 msg_adlib_no    db "AdLib: NOT detected", 13, 10, 0
+msg_mask        db "IRQ with absolute PIC mask: ", 0
 msg_yes         db "yes", 13, 10, 0
 msg_no          db "NO", 13, 10, 0
 msg_bye         db "done", 13, 10, 0
