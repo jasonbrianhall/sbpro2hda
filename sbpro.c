@@ -21,7 +21,7 @@
 __attribute__((dllexport)) DDB ddb = {
     .Req_Device_Number = SBPRO_DEVICE_ID,
     .Dev_Major_Version = 0,
-    .Dev_Minor_Version = 6,
+    .Dev_Minor_Version = 8,
     .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
     .Init_Order = 0x80000000u,
     .Size = sizeof(DDB),
@@ -54,7 +54,10 @@ static uint32_t last_port = 0xFFFFFFFF, last_val, last_out, repeats;
 static void log_io(uint32_t port, uint32_t v, int out)
 {
     if (!dbg_on) return;
-    if (port == last_port && v == last_val && out == last_out) { repeats++; return; }
+    if (port == last_port && v == last_val && out == last_out) {
+        if (++repeats == 10000) { dbg("  (x10000 so far)\n"); repeats = 0; }
+        return;
+    }
     if (repeats) dbg("  (x%u)\n", repeats);
     repeats = 0;
     last_port = port; last_val = v; last_out = out;
@@ -117,6 +120,16 @@ static int trap_ports(void)
     }
     ports_trapped = 1;
 
+    /* Before 5.84, JLOAD keeps Jemm's own DMA handlers in its trap table
+       and removing a handler there can leave a dangling entry: don't try. */
+    uint32_t ver = jlm_version();
+    uint32_t major = ver & 0xFFFF, minor = ver >> 16;
+    if (major < 5 || (major == 5 && minor < 84)) {
+        jprintf("SBPRO: JEMM %u.%u is older than 5.84; DMA counter emulation is off.\n"
+                "       Games that poll the DMA counter may hang.\n", major, minor);
+        return 1;
+    }
+
     dma_ports[0] = sb_dma * 2 + dma_ports_template[0];
     dma_ports[1] = sb_dma * 2 + dma_ports_template[1];
     dma_ports[2] = dma_ports_template[2];
@@ -125,7 +138,7 @@ static int trap_ports(void)
     if (dma_trapped < 3) {
         for (int i = 0; i < dma_trapped; i++) jlm_remove_io(dma_ports[i]);
         dma_trapped = 0;
-        jprintf("SBPRO: warning, this JEMM won't share the DMA ports (needs 5.84+);\n"
+        jprintf("SBPRO: warning, JEMM won't share the DMA ports;\n"
                 "       games that poll the DMA counter may hang\n");
     }
     return 1;
@@ -170,7 +183,8 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO: Sound Blaster Pro 2.0 emulation over HD Audio\n");
+    jprintf("SBPRO: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+            jlm_version() & 0xFFFF, jlm_version() >> 16);
 
     if (!hda_init()) return 0;
     if (hda_irq() == sb_irq) {

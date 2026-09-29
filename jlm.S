@@ -23,6 +23,12 @@
 
         .text
 
+/* uint32_t jlm_version(void) - JLOAD/Jemm version, minor << 16 | major */
+        .globl  _jlm_version
+_jlm_version:
+        VMM(0)
+        ret
+
 /* Client *jlm_client(void) */
         .globl  _jlm_client
 _jlm_client:

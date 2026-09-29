@@ -52,6 +52,7 @@ typedef struct __attribute__((packed)) {
 #define IO_WORD   0x08
 #define IO_DWORD  0x10
 
+uint32_t jlm_version(void);             /* minor << 16 | major */
 Client  *jlm_client(void);
 void     jlm_nest_int(Client *c, int intno);
 void     jlm_nest_far_call(Client *c, uint32_t segoff);

@@ -20,6 +20,7 @@ static uint8_t qhead, qtail;
 static uint8_t cmd, nargs, argi, args[2];
 static uint8_t reset_latch, test_reg, mix_index;
 static uint8_t fm_index, fm_status, fm_timer_ctl;
+static uint8_t busy_count;
 
 static void q_clear(void) { qhead = qtail = 0; }
 static void q_push(uint8_t v)
@@ -148,7 +149,10 @@ uint8_t dsp_in(uint16_t port)
     switch (port - base) {
     case 0x5: return dsp.mixer[mix_index];
     case 0xA: return q_pop();
-    case 0xC: return 0x7F;                              /* bit 7 clear: ready */
+    case 0xC:                                           /* bit 7: busy */
+        /* A real DSP's busy flag flickers even when idle, and some drivers
+           wait to see it set before trusting the card (same as DOSBox). */
+        return (++busy_count & 8) ? 0xFF : 0x7F;
     case 0xE: return q_empty() ? 0x7F : 0xFF;           /* bit 7: data available */
     default:  return 0xFF;
     }
