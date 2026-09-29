@@ -30,7 +30,21 @@ start:
         mov ax, 250Dh
         mov dx, sb_isr
         int 21h
-        mov ax, 3574h
+        ; A mouse driver owns the PS/2 mouse: leave it alone then.
+        mov ax, 3533h
+        int 21h
+        mov ax, es
+        or ax, bx
+        jz .nodrv
+        xor ax, ax
+        int 33h
+        cmp ax, 0FFFFh
+        jne .nodrv
+        mov byte [skipms], 1
+        mov si, msg_skip
+        call puts
+        jmp .msdone
+.nodrv: mov ax, 3574h
         int 21h
         mov [old74], bx
         mov [old74+2], es
@@ -38,6 +52,7 @@ start:
         mov dx, ms_isr
         int 21h
         call mouse_on
+.msdone:
 
         ; buffer: a sawtooth, audible but quiet
         mov di, buf
@@ -135,12 +150,15 @@ start:
         mov ax, 250Dh
         int 21h
         pop ds
+        cmp byte [skipms], 0
+        jne .nomo
         call mouse_off
         push ds
         lds dx, [old74]
         mov ax, 2574h
         int 21h
         pop ds
+.nomo:
 
         mov si, msg_l
         call puts
@@ -162,6 +180,8 @@ start:
         call puts
         mov ax, [sbirq]
         call putw
+        cmp byte [skipms], 0
+        jne .end
         mov si, msg_ms
         call puts
         mov ax, [mpk]
@@ -178,7 +198,7 @@ start:
         call puts
         mov ax, [mdy]
         call putw
-        mov si, msg_nl
+.end:   mov si, msg_nl
         call puts
         mov ax, 4C00h
         int 21h
@@ -267,6 +287,7 @@ mouse_on:
         mov ah, 20h                     ; read command byte
         call kbc_cmd
         call kbc_read
+        mov [ccb], al
         or al, 02h                      ; aux interrupt on
         and al, 0DFh                    ; aux clock on
         push ax
@@ -301,6 +322,10 @@ mouse_off:
         in al, 0A1h
         or al, 10h
         out 0A1h, al
+        mov ah, 60h                     ; command byte as it was
+        call kbc_cmd
+        mov ah, [ccb]
+        call kbc_data
         ret
 
 ms_isr: push ax
@@ -429,6 +454,9 @@ msg_dx  db "  dx ", 0
 msg_dy  db "  dy ", 0
 msg_nl  db 13, 10, 0
 old74   dd 0
+ccb     db 0
+skipms  db 0
+msg_skip db "mouse driver loaded: mouse part skipped (boot without it to test)", 13, 10, 0
 wait_ack db 0
 midx    db 0
 mb0     db 0

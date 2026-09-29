@@ -21,6 +21,7 @@
 #include <crt0.h>
 #include <sys/movedata.h>
 #include <sys/farptr.h>
+#include <sys/exceptn.h>
 #include "sbpm.h"
 
 int _crt0_startup_flags = _CRT0_FLAG_LOCK_MEMORY;
@@ -284,6 +285,13 @@ int main(int argc, char **argv)
     cli_trap(1);
     hold_register(seg);
 
+    /* DJGPP's runtime hooks the keyboard interrupt (for Ctrl-C) and keeps it
+       hooked while a child runs, so every keypress in the child would detour
+       through SBPM, where DJGPP reads port 60h a second time. On an emulated
+       8042 that can hand DOS a keystroke twice. Put the original handlers
+       back while the child runs. */
+    __djgpp_exception_toggle();
+
     int rc;
     if (argc > first) {
         rc = spawnvp(P_WAIT, argv[first], argv + first);
@@ -294,6 +302,7 @@ int main(int argc, char **argv)
         rc = spawnlp(P_WAIT, shell ? shell : "COMMAND.COM", shell ? shell : "COMMAND.COM", NULL);
     }
 
+    __djgpp_exception_toggle();                     /* ours again */
     hold_register(0);
     cli_trap(0);
     for (int i = n - 1; i >= 0; i--) untrap(handles[i]);
