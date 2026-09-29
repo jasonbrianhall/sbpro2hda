@@ -277,6 +277,78 @@ start:
         mov si, msg_note
         call puts
 
+; ---- 12. FM note and digital tone at the same time (~1 s)
+        mov si, adlib_note
+.mn:    lodsw
+        cmp ax, 0FFFFh
+        je .mn_done
+        xchg al, ah
+        call fm_write
+        jmp .mn
+.mn_done:
+        mov di, buf             ; 11111 Hz / 10 = ~1111 Hz square wave
+        mov cx, 4000
+        xor bx, bx
+.sq:    mov al, 40h
+        cmp bx, 5
+        jb .lo
+        mov al, 0C0h
+.lo:    mov [di], al
+        inc di
+        inc bx
+        cmp bx, 10
+        jb .nx
+        xor bx, bx
+.nx:    loop .sq
+        mov cx, 4000
+        call setup_dma
+        mov al, 40h
+        call dsp_write
+        mov al, 0A6h
+        call dsp_write
+        mov byte [got_irq], 0
+        mov al, 14h
+        call dsp_write
+        mov ax, 3999
+        call dsp_write
+        mov al, ah
+        call dsp_write
+        call wait_irq_long
+        mov ah, 0B0h
+        mov al, 11h
+        call fm_write
+        mov si, msg_mix
+        call puts
+        call put_result
+
+; ---- 13. MPU-401: reset + UART handshakes, then piano middle C for ~1 s
+        mov al, 0FFh
+        call mpu_cmd
+        call mpu_read
+        push ax
+        mov si, msg_mpu_reset
+        call puts
+        pop ax
+        call puthex
+        call crlf
+        mov al, 3Fh
+        call mpu_cmd
+        call mpu_read
+        push ax
+        mov si, msg_mpu_uart
+        call puts
+        pop ax
+        call puthex
+        call crlf
+        mov si, midi_on
+        call mpu_send
+        mov bx, 18
+        call wait_ticks_plain
+        mov si, midi_off
+        call mpu_send
+        mov si, msg_midi
+        call puts
+
 ; ---- restore
         cli
         xor ax, ax
@@ -378,6 +450,44 @@ wait_ticks_plain:
         jne .l
         pop es
         ret
+
+mpu_cmd:                        ; AL = command
+        push ax
+        mov dx, 331h
+.w:     in al, dx
+        test al, 40h
+        jnz .w
+        pop ax
+        out dx, al
+        ret
+
+mpu_read:                       ; -> AL (FF if nothing within ~65k polls)
+        mov dx, 331h
+        mov cx, 0FFFFh
+.w:     in al, dx
+        test al, 80h
+        jz .go
+        loop .w
+        mov al, 0FFh
+        ret
+.go:    mov dx, 330h
+        in al, dx
+        ret
+
+mpu_send:                       ; SI -> bytes, FFh terminated
+.l:     lodsb
+        cmp al, 0FFh
+        je .e
+        push ax
+        mov dx, 331h
+.w:     in al, dx
+        test al, 40h
+        jnz .w
+        pop ax
+        mov dx, 330h
+        out dx, al
+        jmp .l
+.e:     ret
 
 put_result:
         cmp byte [got_irq], 0
@@ -495,7 +605,7 @@ puthex: push ax
         pop ax
         ret
 
-msg_hello       db "SBTEST 0.11", 13, 10, 0
+msg_hello       db "SBTEST 0.12", 13, 10, 0
 msg_reset_to    db "reset: TIMEOUT", 13, 10, 0
 msg_reset       db "reset: ", 0
 msg_ver         db "version: ", 0
@@ -516,6 +626,12 @@ msg_note        db "AdLib note played (1 s)", 13, 10, 0
 adlib_note      db 20h, 01h, 40h, 10h, 60h, 0F0h, 80h, 77h, 0A0h, 98h
                 db 23h, 01h, 43h, 00h, 63h, 0F0h, 83h, 77h, 0B0h, 31h
                 dw 0FFFFh
+msg_mix         db "FM + digital together, IRQ: ", 0
+msg_mpu_reset   db "MPU-401 reset ACK (want FE): ", 0
+msg_mpu_uart    db "MPU-401 UART ACK (want FE): ", 0
+msg_midi        db "MIDI middle C played (1 s)", 13, 10, 0
+midi_on         db 0C0h, 00h, 0B0h, 07h, 7Fh, 90h, 3Ch, 7Fh, 0FFh
+midi_off        db 80h, 3Ch, 00h, 0FFh
 msg_yes         db "yes", 13, 10, 0
 msg_no          db "NO", 13, 10, 0
 msg_bye         db "done", 13, 10, 0

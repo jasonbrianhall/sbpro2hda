@@ -1,11 +1,11 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.11
+VERSION=0.12
 
 # Source files
 # C files that must never touch the FPU (they run inside interrupts)
-SRCS    = sbpro.c hda.c pci.c dsp.c sbout.c pic.c libc.c jlm.S
+SRCS    = sbpro.c hda.c pci.c dsp.c sbout.c pic.c mpu.c gmsynth.c libc.c jlm.S
 # FM synth: dbopl's one-time table setup uses the x87, everything after is integer
-FPSRCS  = fpmath.c
+FPSRCS  = fpmath.c gmtables.c
 CXXSRCS = opl.cpp dbopl.cpp
 
 # Output module, and a detection test program (assumes A220 I5 D1)

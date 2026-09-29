@@ -3,7 +3,8 @@
  * A Jemm Loadable Module: runs inside JEMM386/JEMMEX at ring 0, traps the
  * Sound Blaster ports itself and stays resident. Nothing else is needed.
  *
- *   JLOAD SBPRO.DLL [Axxx] [In] [Dn] [/T]      load
+ *   JLOAD SBPRO.DLL [Axxx] [In] [Dn] [Pxxx] [/T] [/D]   load
+ *   Pxxx: MPU-401 port (default 330, P0 = off)
  *   JLOAD -u SBPRO.DLL                          unload
  *
  *   /T  play a test tone instead of emulated output
@@ -17,13 +18,14 @@
 #include "sbout.h"
 #include "pic.h"
 #include "opl.h"
+#include "mpu.h"
 
 #define SBPRO_DEVICE_ID 0x7B50
 
 __attribute__((dllexport)) DDB ddb = {
     .Req_Device_Number = SBPRO_DEVICE_ID,
     .Dev_Major_Version = 0,
-    .Dev_Minor_Version = 11,
+    .Dev_Minor_Version = 12,
     .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
     .Init_Order = 0x80000000u,
     .Size = sizeof(DDB),
@@ -31,6 +33,7 @@ __attribute__((dllexport)) DDB ddb = {
 
 static uint16_t sb_base = 0x220;
 static int sb_irq = 5, sb_dma = 1, test_tone;
+static uint16_t mpu_base = 0x330;
 static int ports_trapped;
 
 /* ---------------------------------------------------------------- output */
@@ -72,11 +75,13 @@ uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type)
     if (type & IO_OUTPUT) {
         if (!pic_owns(p) || (p & 1)) log_io(port, data & 0xFF, 1);   /* skip EOIs */
         if (pic_owns(p)) pic_out(p, (uint8_t)data);
+        else if (mpu_owns(p)) mpu_out(p, (uint8_t)data);
         else if (sb_dma_owns(p)) sb_dma_out(p, (uint8_t)data);
         else dsp_out(p, (uint8_t)data);
         return data;
     }
-    uint8_t v = pic_owns(p) ? pic_in(p) : sb_dma_owns(p) ? sb_dma_in(p) : dsp_in(p);
+    uint8_t v = pic_owns(p) ? pic_in(p) : mpu_owns(p) ? mpu_in(p) :
+                sb_dma_owns(p) ? sb_dma_in(p) : dsp_in(p);
     if (!pic_owns(p)) log_io(port, v, 0);
     if (type & (IO_WORD | IO_DWORD)) return (data & 0xFFFF0000u) | 0xFF00u | v;
     return (data & 0xFFFFFF00u) | v;
@@ -90,6 +95,7 @@ static int port_list(uint16_t *out)
         if (dsp_owns(p)) out[n++] = p;
     for (uint16_t p = 0x388; p < 0x38C; p++)
         if (dsp_owns(p)) out[n++] = p;
+    if (mpu_base) { out[n++] = mpu_base; out[n++] = mpu_base + 1; }
     return n;
 }
 
@@ -193,6 +199,7 @@ static void parse_args(const char *s)
         case 'a': sb_base = (uint16_t)hex(&s); break;
         case 'i': sb_irq = dec(&s); break;
         case 'd': sb_dma = dec(&s); break;
+        case 'p': mpu_base = (uint16_t)hex(&s); break;      /* P330, P0 = no MPU-401 */
         case '/': case '-':
             if ((*s | 0x20) == 't') { test_tone = 1; s++; }
             else if ((*s | 0x20) == 'd') { dbg_init(); s++; }
@@ -204,9 +211,9 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO 0.11: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+    jprintf("SBPRO 0.12: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
             jlm_version() & 0xFFFF, jlm_version() >> 16);
-    dbg("\n\n========== SBPRO 0.11 loaded ==========\n");
+    dbg("\n\n========== SBPRO 0.12 loaded ==========\n");
 
     if (!hda_init()) return 0;
     if (hda_irq() == sb_irq) {
@@ -215,6 +222,7 @@ static int load(JLCOMM *jc)
         return 0;
     }
     opl_init(HDA_RATE);
+    mpu_init(mpu_base);
     sb_out_init(sb_irq, sb_dma);
     if (!sb_out_map_init()) jprintf("SBPRO: warning, DMA buffers above 640K won't play\n");
     dsp_init(sb_base);
@@ -228,7 +236,9 @@ static int load(JLCOMM *jc)
 
     jprintf("SBPRO: HDA IRQ %d. Emulating A%X I%d D%d%s\n", hda_irq(), sb_base, sb_irq, sb_dma,
             test_tone ? " (test tone)" : "");
-    jprintf("SET BLASTER=A%X I%d D%d T4\n", sb_base, sb_irq, sb_dma);
+    if (mpu_base) jprintf("SBPRO: MPU-401 General MIDI at %Xh\n", mpu_base);
+    if (mpu_base) jprintf("SET BLASTER=A%X I%d D%d P%X T4\n", sb_base, sb_irq, sb_dma, mpu_base);
+    else jprintf("SET BLASTER=A%X I%d D%d T4\n", sb_base, sb_irq, sb_dma);
     return 1;
 }
 
