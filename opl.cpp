@@ -1,0 +1,49 @@
+/* SBPRO <-> dbopl glue. The chip lives in static memory and is constructed
+   with placement new, since a JLM has no C++ runtime to run constructors. */
+#include <stdint.h>
+#include <stddef.h>
+#include "dbopl.h"
+#include "opl.h"
+
+inline void *operator new(size_t, void *p) noexcept { return p; }
+
+alignas(8) static unsigned char handler_mem[sizeof(DBOPL::Handler)];
+static DBOPL::Handler *chip;
+static Bit32s buf[2 * OPL_MAX_FRAMES];
+extern "C" { int32_t opl_peak; }            /* largest |sample| since last read (debug) */
+
+extern "C" void opl_init(int rate)
+{
+    /* Table setup uses the FPU once; keep whatever state the machine had. */
+    alignas(4) unsigned char fpu_state[108];
+    __asm__ volatile("fnsave %0\n\tfninit" : "=m"(fpu_state));
+    chip = new (handler_mem) DBOPL::Handler();
+    chip->Init((Bitu)rate);
+    __asm__ volatile("frstor %0" : : "m"(fpu_state));
+}
+
+extern "C" void opl_write(uint32_t reg, uint8_t val)
+{
+    if (chip) chip->WriteReg(reg, val);
+}
+
+/* Adds the FM output to 'out' (interleaved stereo). */
+extern "C" void opl_mix(int32_t *out, int frames)
+{
+    if (!chip) return;
+    if (frames > OPL_MAX_FRAMES) frames = OPL_MAX_FRAMES;
+    chip->Generate(buf, (Bitu)frames);
+    int n = chip->chip.opl3Active ? frames * 2 : frames;
+    for (int i = 0; i < n; i++) {
+        int32_t v = buf[i] < 0 ? -buf[i] : buf[i];
+        if (v > opl_peak) opl_peak = v;
+    }
+    if (chip->chip.opl3Active) {
+        for (int i = 0; i < frames * 2; i++) out[i] += buf[i];
+    } else {
+        for (int i = 0; i < frames; i++) {
+            out[i * 2] += buf[i];
+            out[i * 2 + 1] += buf[i];
+        }
+    }
+}

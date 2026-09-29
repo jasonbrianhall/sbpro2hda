@@ -16,13 +16,14 @@
 #include "dsp.h"
 #include "sbout.h"
 #include "pic.h"
+#include "opl.h"
 
 #define SBPRO_DEVICE_ID 0x7B50
 
 __attribute__((dllexport)) DDB ddb = {
     .Req_Device_Number = SBPRO_DEVICE_ID,
     .Dev_Major_Version = 0,
-    .Dev_Minor_Version = 10,
+    .Dev_Minor_Version = 11,
     .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
     .Init_Order = 0x80000000u,
     .Size = sizeof(DDB),
@@ -203,9 +204,9 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO 0.10: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+    jprintf("SBPRO 0.11: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
             jlm_version() & 0xFFFF, jlm_version() >> 16);
-    dbg("\n\n========== SBPRO 0.10 loaded ==========\n");
+    dbg("\n\n========== SBPRO 0.11 loaded ==========\n");
 
     if (!hda_init()) return 0;
     if (hda_irq() == sb_irq) {
@@ -213,6 +214,7 @@ static int load(JLCOMM *jc)
         hda_stop();
         return 0;
     }
+    opl_init(HDA_RATE);
     sb_out_init(sb_irq, sb_dma);
     if (!sb_out_map_init()) jprintf("SBPRO: warning, DMA buffers above 640K won't play\n");
     dsp_init(sb_base);

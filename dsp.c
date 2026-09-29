@@ -1,8 +1,7 @@
 /* Sound Blaster Pro 2.0 DSP, mixer and FM chip status.
  *
- *  base+0..3, base+8..9, 388h..38Bh   FM (OPL3). Only the status/timer
- *                                     behaviour is emulated for now, so
- *                                     AdLib detection succeeds; no synthesis.
+ *  base+0..3, base+8..9, 388h..38Bh   FM (OPL3), synthesized by dbopl;
+ *                                     timer flags are faked for detection.
  *  base+4  mixer index      base+5  mixer data
  *  base+6  DSP reset        base+A  DSP read data
  *  base+C  DSP write / write-buffer status
@@ -11,6 +10,7 @@
 #include <string.h>
 #include "dsp.h"
 #include "sbout.h"
+#include "opl.h"
 
 DspState dsp;
 
@@ -19,7 +19,8 @@ static uint8_t outq[16];
 static uint8_t qhead, qtail;
 static uint8_t cmd, nargs, argi, args[2];
 static uint8_t reset_latch, test_reg, mix_index;
-static uint8_t fm_index, fm_status, fm_timer_ctl;
+static uint16_t fm_index;       /* bit 8 = OPL3 second register bank */
+static uint8_t fm_status, fm_timer_ctl;
 static uint8_t busy_count;
 
 static void q_clear(void) { qhead = qtail = 0; }
@@ -120,8 +121,14 @@ static int fm_data_port(uint16_t p)
     return p == 0x389 || p == 0x38B || p == base + 1 || p == base + 3 || p == base + 9;
 }
 
-static void fm_write(uint8_t reg, uint8_t v)
+static int fm_bank1_port(uint16_t p)
 {
+    return p == 0x38A || p == 0x38B || p == base + 2 || p == base + 3;
+}
+
+static void fm_write(uint16_t reg, uint8_t v)
+{
+    opl_write(reg, v);
     if (reg != 0x04) return;
     if (v & 0x80) { fm_status = 0; return; }             /* reset IRQ flags */
     fm_timer_ctl = v;
@@ -160,7 +167,7 @@ uint8_t dsp_in(uint16_t port)
 
 void dsp_out(uint16_t port, uint8_t v)
 {
-    if (fm_index_port(port)) { fm_index = v; return; }
+    if (fm_index_port(port)) { fm_index = v | (fm_bank1_port(port) ? 0x100 : 0); return; }
     if (fm_data_port(port)) { fm_write(fm_index, v); return; }
     switch (port - base) {
     case 0x4:

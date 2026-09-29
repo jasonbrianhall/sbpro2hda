@@ -18,6 +18,7 @@
 #include "hda.h"
 #include "sbout.h"
 #include "pic.h"
+#include "opl.h"
 
 #define WINDOW_PAGES 17                     /* 64 KB + one page of slack */
 
@@ -182,7 +183,9 @@ static void next_frame(void)
     s.cur_r = r;
 }
 
-void sb_render(int16_t *out, int frames)
+static int32_t mix[2 * OPL_MAX_FRAMES];
+
+static void render_chunk(int16_t *out, int frames)
 {
     for (int i = 0; i < frames; i++) {
         int32_t l, r;
@@ -199,8 +202,34 @@ void sb_render(int16_t *out, int frames)
             l = r = ((int32_t)dsp.dac_value - 128) * 256;  /* direct DAC (10h) */
         }
         if (!dsp.speaker) l = r = 0;
-        out[i * 2] = (int16_t)l;
-        out[i * 2 + 1] = (int16_t)r;
+        mix[i * 2] = l;
+        mix[i * 2 + 1] = r;
+    }
+    opl_mix(mix, frames);
+
+    /* /D: report the FM level twice a second while it's playing */
+    static uint32_t since;
+    since += frames;
+    if (since >= HDA_RATE / 2) {
+        if (opl_peak) dbg("FM: peak %d\n", opl_peak);
+        opl_peak = 0;
+        since = 0;
+    }
+    for (int i = 0; i < frames * 2; i++) {
+        int32_t v = mix[i];
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        out[i] = (int16_t)v;
+    }
+}
+
+void sb_render(int16_t *out, int frames)
+{
+    while (frames > 0) {
+        int n = frames > OPL_MAX_FRAMES ? OPL_MAX_FRAMES : frames;
+        render_chunk(out, n);
+        out += n * 2;
+        frames -= n;
     }
 }
 

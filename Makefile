@@ -1,8 +1,12 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.10
+VERSION=0.11
 
 # Source files
-SRCS = sbpro.c hda.c pci.c dsp.c sbout.c pic.c libc.c jlm.S
+# C files that must never touch the FPU (they run inside interrupts)
+SRCS    = sbpro.c hda.c pci.c dsp.c sbout.c pic.c libc.c jlm.S
+# FM synth: dbopl's one-time table setup uses the x87, everything after is integer
+FPSRCS  = fpmath.c
+CXXSRCS = opl.cpp dbopl.cpp
 
 # Output module, and a detection test program (assumes A220 I5 D1)
 DLL_TARGET = sbpro.dll
@@ -24,10 +28,20 @@ USER_ID = $(shell id -u)
 GROUP_ID = $(shell id -g)
 
 CC      = i686-w64-mingw32-gcc
-CFLAGS  = -O2 -Wall -march=i486 -mgeneral-regs-only -ffreestanding -fno-builtin \
-          -fno-stack-protector -fno-asynchronous-unwind-tables -mno-stack-arg-probe
+CXX     = i686-w64-mingw32-g++
+BASEFLAGS = -O2 -Wall -march=i486 -ffreestanding -fno-builtin -fno-stack-protector \
+          -fno-asynchronous-unwind-tables -mno-stack-arg-probe
+CFLAGS  = $(BASEFLAGS) -mgeneral-regs-only
+FPFLAGS = $(BASEFLAGS) -mfpmath=387 -mno-sse
+CXXFLAGS = $(FPFLAGS) -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wno-unused
 LDFLAGS = -shared -nostdlib -Wl,--subsystem,native -Wl,-e,_DllMain@12 \
           -Wl,--image-base,0x10000000 -lgcc
+
+# One shell line that builds everything (used both locally and in Docker)
+BUILD = $(CC) $(CFLAGS) -c $(SRCS) && \
+        $(CC) $(FPFLAGS) -c $(FPSRCS) && \
+        $(CXX) $(CXXFLAGS) -c $(CXXSRCS) && \
+        $(CC) -o $(DLL_TARGET) *.o $(LDFLAGS)
 
 # JLOAD only accepts "PX" binaries: patch the "PE" signature
 PATCH_PX = sh patchpx.sh $(DLL_TARGET)
@@ -37,7 +51,7 @@ all: msdos
 
 # Target to build the MinGW Docker image
 pull-mingw:
-	printf 'FROM debian:stable-slim\nRUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 nasm && rm -rf /var/lib/apt/lists/*\n' \
+	printf 'FROM debian:stable-slim\nRUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 g++-mingw-w64-i686 nasm && rm -rf /var/lib/apt/lists/*\n' \
 		| docker build -t $(MINGW_IMAGE) -
 
 # Target to download JEMMEX, JLOAD and HDPMI32i into dist/
@@ -51,7 +65,7 @@ get-dos-tools:
 # Target to build SBPRO.DLL using MinGW in Docker
 msdos: pull-mingw get-dos-tools
 	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(MINGW_IMAGE) /bin/sh -c "cd /src && \
-	$(CC) $(CFLAGS) $(SRCS) -o $(DLL_TARGET) $(LDFLAGS) && \
+	rm -f *.o && $(BUILD) && \
 	$(PATCH_PX) && \
 	nasm -f bin -o $(TEST_TARGET) sbtest.asm"
 	cp $(DLL_TARGET) $(DIST)/SBPRO.DLL
@@ -59,7 +73,8 @@ msdos: pull-mingw get-dos-tools
 
 # Target to build with a locally installed MinGW (no Docker)
 local:
-	$(CC) $(CFLAGS) $(SRCS) -o $(DLL_TARGET) $(LDFLAGS)
+	rm -f *.o
+	$(BUILD)
 	$(PATCH_PX)
 	nasm -f bin -o $(TEST_TARGET) sbtest.asm
 

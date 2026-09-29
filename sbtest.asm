@@ -260,6 +260,23 @@ start:
         call puts
         call put_result
 
+; ---- 11. AdLib note for ~1 s (check "FM: peak" in the SBPRO log)
+        mov si, adlib_note
+.an:    lodsw
+        cmp ax, 0FFFFh
+        je .an_done
+        xchg al, ah             ; table holds reg, value
+        call fm_write
+        jmp .an
+.an_done:
+        mov bx, 18
+        call wait_ticks_plain
+        mov ah, 0B0h
+        mov al, 11h             ; key off
+        call fm_write
+        mov si, msg_note
+        call puts
+
 ; ---- restore
         cli
         xor ax, ax
@@ -348,6 +365,18 @@ fm_write:                       ; AH = register, AL = value
 .b:     in al, dx
         loop .b
         pop ax
+        ret
+
+wait_ticks_plain:
+        push es
+        xor ax, ax
+        mov es, ax
+        mov ax, [es:46Ch]
+        add bx, ax
+.l:     mov ax, [es:46Ch]
+        cmp ax, bx
+        jne .l
+        pop es
         ret
 
 put_result:
@@ -466,7 +495,7 @@ puthex: push ax
         pop ax
         ret
 
-msg_hello       db "SBTEST 0.10", 13, 10, 0
+msg_hello       db "SBTEST 0.11", 13, 10, 0
 msg_reset_to    db "reset: TIMEOUT", 13, 10, 0
 msg_reset       db "reset: ", 0
 msg_ver         db "version: ", 0
@@ -483,6 +512,10 @@ msg_adlib_yes   db "AdLib: detected", 13, 10, 0
 msg_adlib_no    db "AdLib: NOT detected", 13, 10, 0
 msg_mask        db "IRQ with absolute PIC mask: ", 0
 msg_d0          db "new sound after D0h pause: ", 0
+msg_note        db "AdLib note played (1 s)", 13, 10, 0
+adlib_note      db 20h, 01h, 40h, 10h, 60h, 0F0h, 80h, 77h, 0A0h, 98h
+                db 23h, 01h, 43h, 00h, 63h, 0F0h, 83h, 77h, 0B0h, 31h
+                dw 0FFFFh
 msg_yes         db "yes", 13, 10, 0
 msg_no          db "NO", 13, 10, 0
 msg_bye         db "done", 13, 10, 0
