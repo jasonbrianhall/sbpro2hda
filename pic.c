@@ -5,36 +5,7 @@ static uint8_t shadow[2];       /* mask as the game last wrote it */
 static uint8_t protect[2];      /* bits SBPRO keeps unmasked */
 static int icw_left[2];         /* remaining init words after an ICW1 */
 
-/* The SB IRQ SBPRO delivers never passes through the real 8259, so it has no
-   in-service bit there. Without one, the game's EOI would land on the real
-   controller and end whatever real interrupt is in service (the timer, say)
-   too early. So the emulated IRQ gets a virtual in-service bit that the
-   game's EOI clears, and a new SB IRQ waits for it like on real hardware. */
-static int vis_irq = -1;        /* emulated IRQ in service, -1 = none */
-static int vis_cascade;         /* slave IRQ: master EOI still expected */
-static int vis_age;             /* HDA interrupts since delivery */
-#define VIS_TIMEOUT 100         /* ~0.3 s: give up on a game that never EOIs */
-
 int pic_watching;               /* set once ports 20h-A1h are trapped */
-
-void pic_virtual_start(int irq)
-{
-    if (!pic_watching) return;                  /* can't see EOIs: don't wait for one */
-    vis_irq = irq;
-    vis_cascade = irq >= 8;
-    vis_age = 0;
-}
-
-int pic_virtual_busy(int irq)
-{
-    return vis_irq == irq;
-}
-
-void pic_tick(void)
-{
-    if ((vis_irq >= 0 || vis_cascade) && ++vis_age > VIS_TIMEOUT)
-        vis_irq = -1, vis_cascade = 0;
-}
 
 static uint8_t ocw3_read[2] = { 0x0A, 0x0A };   /* game's IRR/ISR read select */
 
@@ -48,32 +19,16 @@ static uint8_t real_isr(int c)
     return isr;
 }
 
-/* An EOI ends the highest-priority interrupt in service, as on a real 8259:
-   if a real interrupt of higher priority than the emulated one is in service
-   (a timer or keyboard handler), the EOI is its and goes to the controller.
-   Otherwise it's for the emulated IRQ. Returns 1 if the EOI was ours. */
-static int virtual_eoi(int c, uint8_t v)
+/* The emulated SB IRQ never passes through the real 8259, so SBPRO applies
+   the 8259's priority rule itself: while a real interrupt of the same or
+   higher priority is in service (the game's timer or keyboard handler hasn't
+   sent its EOI yet), the SB IRQ waits. That way the SB handler never runs
+   inside those handlers, and its EOI always finds the real controller idle
+   (a no-op there), so it can't end someone else's interrupt. */
+int pic_real_busy(int irq)
 {
-    int cmd = v & 0xE0, level = v & 7;
-    if (cmd != 0x20 && cmd != 0x60) return 0;               /* not an EOI */
-    int want;                                               /* our level here */
-    if (c == 1) {
-        if (vis_irq < 8) return 0;
-        want = vis_irq - 8;
-    } else if (vis_irq >= 0 && vis_irq < 8) {
-        want = vis_irq;
-    } else if (vis_cascade && vis_irq < 0) {                /* slave EOI came first */
-        want = 2;
-    } else return 0;
-    if (cmd == 0x60) {
-        if (level != want) return 0;                        /* specific EOI, not ours */
-    } else if (real_isr(c) & ((2u << want) - 1)) {
-        return 0;                                           /* a real one ranks higher */
-    }
-    if (c == 1 || vis_irq < 8) vis_irq = -1;
-    else vis_cascade = 0;
-    if (c == 0) vis_cascade = 0;
-    return 1;
+    if (irq < 8) return (real_isr(0) & ((2u << irq) - 1)) != 0;
+    return (real_isr(0) & 0x07) || (real_isr(1) & ((2u << (irq - 8)) - 1));
 }
 
 void pic_init(int hda_irq)
@@ -84,8 +39,6 @@ void pic_init(int hda_irq)
     if (hda_irq < 8) protect[0] = 1 << hda_irq;
     else { protect[0] = 1 << 2; protect[1] = 1 << (hda_irq - 8); }
     icw_left[0] = icw_left[1] = 0;
-    vis_irq = -1;
-    vis_cascade = 0;
 }
 
 int pic_owns(uint16_t port)
@@ -106,8 +59,6 @@ void pic_out(uint16_t port, uint8_t v)
     if ((port & 1) == 0) {                          /* 20h / A0h */
         if (v & 0x10)                               /* ICW1: init sequence follows */
             icw_left[c] = 1 + !(v & 0x02) + (v & 0x01);
-        else if (!(v & 0x08) && virtual_eoi(c, v))  /* OCW2: EOI for our IRQ */
-            return;
         else if ((v & 0x08) && (v & 0x02))          /* OCW3: IRR/ISR read select */
             ocw3_read[c] = 0x08 | (v & 0x03);
         outb(port, v);

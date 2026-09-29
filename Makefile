@@ -1,5 +1,5 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.17
+VERSION=0.18
 
 # Source files
 # C files that must never touch the FPU (they run inside interrupts)
@@ -34,7 +34,6 @@ DIST     = dist
 # Release package: sbpro-VERSION.zip with everything under SBPRO\ (DOS names)
 PKG_DIR  = release/SBPRO
 PKG_ZIP  = sbpro-$(VERSION).zip
-GPL_TEXT ?= /usr/share/common-licenses/GPL-2
 
 # QEMU disk image with FreeDOS (JEMMEX + JLOAD)
 DOS_IMAGE = freedos.img
@@ -119,7 +118,6 @@ package: get-dos-tools
 	cp $(DIST)/Artistic.txt $(PKG_DIR)/JEMM.TXT
 	cp $(DIST)/HXRT.TXT $(PKG_DIR)/HXRT.TXT
 	cp dos/SBPRO.BAT dos/SBREAL.BAT dos/README.TXT $(PKG_DIR)/
-	if [ -f $(GPL_TEXT) ]; then sed 's/$$/\r/' $(GPL_TEXT) > $(PKG_DIR)/COPYING.TXT; fi
 	rm -f $(PKG_ZIP)
 	cd release && zip -r -X ../$(PKG_ZIP) SBPRO
 	@echo "Built $(PKG_ZIP)"

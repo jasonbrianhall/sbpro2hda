@@ -337,7 +337,7 @@ int sb_pending_vector(void)
 {
     if (!irq_pending) return 0;
     if (pic_masked(sb_irq)) return 0;                     /* masked: keep it pending */
-    if (pic_virtual_busy(sb_irq)) return 0;               /* previous one not EOIed yet */
+    if (pic_real_busy(sb_irq)) return 0;                  /* 8259 priority: wait */
     if (isr_active) return 0;                             /* handler still running */
     if (sb_hold_addr && *(volatile uint8_t *)sb_hold_addr) {
         *(volatile uint8_t *)sb_hold_addr = 0;
@@ -346,7 +346,6 @@ int sb_pending_vector(void)
     hold_streak = 0;
     int vec = sb_irq < 8 ? 0x08 + sb_irq : 0x70 + sb_irq - 8;
     irq_pending = 0;
-    pic_virtual_start(sb_irq);
     dbg("SB: IRQ %d -> int %X\n", sb_irq, vec);
     return vec;
 }
