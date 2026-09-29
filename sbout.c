@@ -33,6 +33,10 @@ static struct {
     int16_t prev_l, prev_r, cur_l, cur_r;
 } s;
 
+/* Emulated view of the SB channel's 8237 registers, for games that poll
+   the DMA count or the status register instead of waiting for the IRQ. */
+static int dma_valid, dma_tc, dma_done, soft_ff;
+
 static uint32_t window_lin;                 /* for buffers outside conventional memory */
 static int window_committed;
 
@@ -71,6 +75,9 @@ static void read_dma_controller(void)
     s.dma_phys = page << 16 | addr;
     s.dma_len = count + 1;
     s.dma_pos = 0;
+    dma_valid = 1;
+    dma_done = 0;
+    dma_tc = 0;
 }
 
 static int map_dma_buffer(void)
@@ -111,14 +118,32 @@ void sb_out_start(int autoinit, uint32_t len_bytes, int silence)
 
     if (!silence) {
         read_dma_controller();
-        if (!map_dma_buffer()) { s.active = 0; return; }
+        if (!map_dma_buffer()) {
+            dbg("SB: DMA buffer %X not mappable\n", s.dma_phys);
+            s.active = 0;
+            return;
+        }
+    }
+    dbg("SB: start %s len=%u rate=%u%s dma=%X/%u\n", autoinit ? "auto" : "single",
+        s.block_len, rate, s.stereo ? " stereo" : "", s.dma_phys, s.dma_len);
+
+    /* Detection transfers (a few bytes) finish in microseconds on a real
+       card; complete them now so the IRQ arrives before any timeout. */
+    if (!autoinit && s.block_len <= 64) {
+        if (!silence) {
+            s.dma_pos = s.block_len % (s.dma_len ? s.dma_len : 1);
+            if (s.dma_pos == 0) { dma_done = 1; dma_tc = 1; }
+        }
+        s.active = 0;
+        irq_pending = 1;
+        return;
     }
     s.active = 1;
 }
 
 void sb_out_stop(void)            { s.active = 0; irq_pending = 0; }
 void sb_out_exit_autoinit(void)   { s.autoinit = 0; }
-void sb_out_raise_irq(void)       { irq_pending = 1; }
+void sb_out_raise_irq(void)       { irq_pending = 1; dbg("SB: F2h IRQ request\n"); }
 
 /* ---------------------------------------------------------------- render */
 
@@ -127,7 +152,11 @@ static uint8_t fetch(void)
     uint8_t b = 0x80;
     if (!s.silence) {
         b = s.mem[s.dma_pos];
-        if (++s.dma_pos >= s.dma_len) s.dma_pos = 0;     /* 8237 auto-init wrap */
+        if (++s.dma_pos >= s.dma_len) {                  /* 8237 terminal count */
+            s.dma_pos = 0;
+            dma_tc = 1;
+            if (!s.autoinit) dma_done = 1;
+        }
     }
     if (--s.block_left == 0) {
         irq_pending = 1;
@@ -170,17 +199,67 @@ void sb_render(int16_t *out, int frames)
     }
 }
 
+/* ---------------------------------------------------------------- 8237 */
+
+int sb_dma_owns(uint16_t port)
+{
+    return port == sb_dma * 2 || port == sb_dma * 2 + 1 || port == 0x08;
+}
+
+/* Writes go to the real controller unchanged. Reprogramming the address or
+   count makes our emulated view stale until the next DSP start. */
+void sb_dma_out(uint16_t port, uint8_t v)
+{
+    outb(port, v);
+    if (port != 0x08) dma_valid = 0;
+}
+
+uint8_t sb_dma_in(uint16_t port)
+{
+    uint8_t hw = inb(port);                 /* also toggles the real flip-flop */
+    if (!dma_valid) return hw;
+
+    if (port == 0x08) {
+        uint8_t v = hw & ~(0x11 << sb_dma);
+        if (dma_tc) v |= 1 << sb_dma;
+        if (s.active && !s.silence) v |= 0x10 << sb_dma;
+        dma_tc = 0;
+        return v;
+    }
+
+    /* The real registers still hold what the game programmed (nothing ever
+       requests DMA on this channel). Comparing the byte we just read with
+       that value tells which half the game's flip-flop selected. */
+    uint32_t base, cur;
+    if (port == sb_dma * 2) {
+        base = s.dma_phys & 0xFFFF;
+        cur = dma_done ? base + s.dma_len : base + s.dma_pos;
+    } else {
+        base = s.dma_len - 1;
+        cur = dma_done ? 0xFFFF : s.dma_len - 1 - s.dma_pos;
+    }
+    uint8_t lo = base & 0xFF, hi = (base >> 8) & 0xFF;
+    int high;
+    if (lo != hi) high = (hw == hi);
+    else high = soft_ff;
+    soft_ff = !high;
+    return high ? (uint8_t)(cur >> 8) : (uint8_t)cur;
+}
+
 /* ---------------------------------------------------------------- IRQ */
 
 int sb_pending_vector(void)
 {
     if (!irq_pending) return 0;
+    int vec;
     if (sb_irq < 8) {
         if (inb(0x21) & (1 << sb_irq)) return 0;         /* masked: keep it pending */
-        irq_pending = 0;
-        return 0x08 + sb_irq;
+        vec = 0x08 + sb_irq;
+    } else {
+        if ((inb(0xA1) & (1 << (sb_irq - 8))) || (inb(0x21) & 0x04)) return 0;
+        vec = 0x70 + sb_irq - 8;
     }
-    if ((inb(0xA1) & (1 << (sb_irq - 8))) || (inb(0x21) & 0x04)) return 0;
     irq_pending = 0;
-    return 0x70 + sb_irq - 8;
+    dbg("SB: IRQ %d -> int %X\n", sb_irq, vec);
+    return vec;
 }

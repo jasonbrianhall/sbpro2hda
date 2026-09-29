@@ -15,16 +15,16 @@
 #include "pci.h"
 #include "hda.h"
 
-#define RING_BUFS    8
-#define CHUNK_FRAMES 512
+#define RING_BUFS    32
+#define CHUNK_FRAMES 128                               /* IRQ every 2.7 ms */
 #define RING_FRAMES  (RING_BUFS * CHUNK_FRAMES)       /* power of two */
 #define RING_MASK    (RING_FRAMES - 1)
-#define TARGET_AHEAD (2 * CHUNK_FRAMES)                /* ~21 ms */
+#define TARGET_AHEAD (8 * CHUNK_FRAMES)                /* ~21 ms */
 
 /* DMA block layout, 4 KB aligned */
 #define RIRB_OFF  0x0000        /* 2 KB */
 #define CORB_OFF  0x0800        /* 1 KB */
-#define BDL_OFF   0x0C00        /* 128 bytes */
+#define BDL_OFF   0x0C00        /* 512 bytes */
 #define RING_OFF  0x1000        /* 16 KB */
 #define DMA_BYTES (RING_OFF + RING_FRAMES * 4)
 #define DMA_PAGES (DMA_BYTES / 4096)

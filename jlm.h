@@ -75,4 +75,9 @@ int      hda_irq_service(void);
 /* Console output during load (DOS via nested execution). */
 void jprintf(const char *fmt, ...);
 
+/* Debug log to COM1, 115200 8N1. Enabled by /D. */
+extern int dbg_on;
+void dbg_init(void);
+void dbg(const char *fmt, ...);
+
 #endif

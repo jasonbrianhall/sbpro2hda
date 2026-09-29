@@ -14,4 +14,9 @@ void sb_out_raise_irq(void);
 void sb_render(int16_t *out, int frames);   /* HDA render callback */
 int  sb_pending_vector(void);               /* called from the HDA IRQ; 0 = nothing to inject */
 
+/* 8237 register emulation for the SB channel (address, count, status). */
+int     sb_dma_owns(uint16_t port);
+uint8_t sb_dma_in(uint16_t port);
+void    sb_dma_out(uint16_t port, uint8_t v);
+
 #endif

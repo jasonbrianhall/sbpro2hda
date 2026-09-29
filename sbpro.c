@@ -7,6 +7,7 @@
  *   JLOAD -u SBPRO.DLL                          unload
  *
  *   /T  play a test tone instead of emulated output
+ *   /D  log port traffic to COM1, 115200 8N1 (QEMU: -serial file:sbpro.log)
  */
 #include <stdint.h>
 #include <string.h>
@@ -20,7 +21,7 @@
 __attribute__((dllexport)) DDB ddb = {
     .Req_Device_Number = SBPRO_DEVICE_ID,
     .Dev_Major_Version = 0,
-    .Dev_Minor_Version = 4,
+    .Dev_Minor_Version = 6,
     .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
     .Init_Order = 0x80000000u,
     .Size = sizeof(DDB),
@@ -47,13 +48,30 @@ static void render_tone(int16_t *out, int frames)
 
 /* ---------------------------------------------------------------- traps */
 
+/* Log a port access; identical repeats (status polling) are counted. */
+static uint32_t last_port = 0xFFFFFFFF, last_val, last_out, repeats;
+
+static void log_io(uint32_t port, uint32_t v, int out)
+{
+    if (!dbg_on) return;
+    if (port == last_port && v == last_val && out == last_out) { repeats++; return; }
+    if (repeats) dbg("  (x%u)\n", repeats);
+    repeats = 0;
+    last_port = port; last_val = v; last_out = out;
+    dbg(out ? "out %X,%2X\n" : "in  %X=%2X\n", port, v);
+}
+
 uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type)
 {
+    uint16_t p = (uint16_t)port;
     if (type & IO_OUTPUT) {
-        dsp_out((uint16_t)port, (uint8_t)data);
+        log_io(port, data & 0xFF, 1);
+        if (sb_dma_owns(p)) sb_dma_out(p, (uint8_t)data);
+        else dsp_out(p, (uint8_t)data);
         return data;
     }
-    uint8_t v = dsp_in((uint16_t)port);
+    uint8_t v = sb_dma_owns(p) ? sb_dma_in(p) : dsp_in(p);
+    log_io(port, v, 0);
     if (type & (IO_WORD | IO_DWORD)) return (data & 0xFFFF0000u) | 0xFF00u | v;
     return (data & 0xFFFFFF00u) | v;
 }
@@ -69,6 +87,12 @@ static int port_list(uint16_t *out)
     return n;
 }
 
+/* 8237 ports for the SB channel. Optional: JEMM before 5.84 keeps the DMA
+   ports to itself, and then games that poll the DMA count won't work. */
+static const uint16_t dma_ports_template[3] = { 0, 1, 0x08 };
+static uint16_t dma_ports[3];
+static int dma_trapped;
+
 static void untrap_ports(void)
 {
     uint16_t ports[24];
@@ -76,6 +100,8 @@ static void untrap_ports(void)
     if (ports_trapped)
         for (int i = 0; i < n; i++) jlm_remove_io(ports[i]);
     ports_trapped = 0;
+    for (int i = 0; i < dma_trapped; i++) jlm_remove_io(dma_ports[i]);
+    dma_trapped = 0;
 }
 
 static int trap_ports(void)
@@ -90,6 +116,18 @@ static int trap_ports(void)
         }
     }
     ports_trapped = 1;
+
+    dma_ports[0] = sb_dma * 2 + dma_ports_template[0];
+    dma_ports[1] = sb_dma * 2 + dma_ports_template[1];
+    dma_ports[2] = dma_ports_template[2];
+    for (dma_trapped = 0; dma_trapped < 3; dma_trapped++)
+        if (!jlm_install_io(dma_ports[dma_trapped], io_thunk)) break;
+    if (dma_trapped < 3) {
+        for (int i = 0; i < dma_trapped; i++) jlm_remove_io(dma_ports[i]);
+        dma_trapped = 0;
+        jprintf("SBPRO: warning, this JEMM won't share the DMA ports (needs 5.84+);\n"
+                "       games that poll the DMA counter may hang\n");
+    }
     return 1;
 }
 
@@ -123,6 +161,7 @@ static void parse_args(const char *s)
         case 'd': sb_dma = dec(&s); break;
         case '/': case '-':
             if ((*s | 0x20) == 't') { test_tone = 1; s++; }
+            else if ((*s | 0x20) == 'd') { dbg_init(); s++; }
             break;
         }
     }

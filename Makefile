@@ -1,5 +1,5 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.4
+VERSION=0.6
 
 # Source files
 SRCS = sbpro.c hda.c pci.c dsp.c sbout.c libc.c jlm.S
@@ -61,7 +61,7 @@ local:
 
 # Target to run in QEMU with Intel HD Audio
 run: msdos
-	qemu-system-i386 -m 64 -hda $(DOS_IMAGE) -hdb fat:rw:$(DIST) \
+	qemu-system-i386 -m 64 -hda $(DOS_IMAGE) -hdb fat:rw:$(DIST) -serial file:sbpro.log \
 		-audiodev pa,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0
 
 # Clean target to remove generated files

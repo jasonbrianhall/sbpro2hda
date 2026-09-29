@@ -148,7 +148,18 @@ _io_thunk:
         push    %eax
         call    _sb_io
         addl    $12, %esp
-        ret
+/* Jemm has already moved the client's IP past the IN/OUT, so a pending
+   SB IRQ (F2h, a finished tiny transfer) can be injected right here -
+   but only if the game has interrupts enabled. */
+        testl   $0x200, 48(%ebp)        /* Client_EFlags.IF */
+        jz      3f
+        push    %eax
+        call    _sb_pending_vector
+        testl   %eax, %eax
+        jz      2f
+        VMM(Simulate_Int)
+2:      pop     %eax
+3:      ret
 
 /* V86 callback installed as the HDA IRQ vector. EBP = client. */
         .globl  _irq_thunk
