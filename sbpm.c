@@ -25,6 +25,7 @@
 #include "sbpm.h"
 
 int _crt0_startup_flags = _CRT0_FLAG_LOCK_MEMORY;
+unsigned _stklen = 64 * 1024;          /* stays resident while games run: keep it small */
 
 static uint16_t sb_base = 0x220, mpu_base = 0x330;
 static int sb_dma = 1;

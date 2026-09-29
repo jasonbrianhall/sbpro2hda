@@ -1,5 +1,5 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.22
+VERSION=0.23
 
 # Source files
 # C files that must never touch the FPU (they run inside interrupts)
@@ -125,10 +125,13 @@ package: get-dos-tools
 print-version:
 	@echo $(VERSION)
 
-# Target to run in QEMU with Intel HD Audio
+# Target to run in QEMU with Intel HD Audio. pentium3 + clock=vm keep keyboard
+# timing sane under TCG (no doubled or stuck keys).
 run: msdos
-	qemu-system-i386 -m 64 -hda $(DOS_IMAGE) -hdb fat:rw:$(DIST) -serial file:sbpro.log \
-		-audiodev pa,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0
+	qemu-system-i386 -machine pc,accel=tcg -cpu pentium3 -m 64 \
+		-rtc base=localtime,clock=vm,driftfix=none \
+		-hda $(DOS_IMAGE) -hdb fat:rw:$(DIST) -serial file:sbpro.log \
+		-audiodev pa,id=snd0 -device intel-hda,id=hda0 -device hda-duplex,audiodev=snd0,bus=hda0.0
 
 # Clean target to remove generated files
 clean:

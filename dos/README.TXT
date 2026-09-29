@@ -13,6 +13,8 @@ Options (after SBPRO.BAT or SBREAL.BAT):
    /H2    use the second HD Audio card (/H1, /H3 ...)
    /HDMI  play through HDMI/DisplayPort instead of speakers/line out
    /D     debug log on COM1 (115200 baud)
+QEMU: use -cpu pentium3 -rtc base=localtime,clock=vm,driftfix=none
+(otherwise keys can double or stick under TCG).
 BLASTER defaults to A220 I5 D1 P330 T4; set it first to change it.
 SBTEST.COM and SBTESTPM.EXE (run it from the SBPRO prompt) test the card.
 KBTEST.COM checks that key presses/releases and PS/2 mouse data all arrive
