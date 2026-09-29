@@ -1,5 +1,5 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.12
+VERSION=0.13
 
 # Source files
 # C files that must never touch the FPU (they run inside interrupts)
@@ -12,8 +12,16 @@ CXXSRCS = opl.cpp dbopl.cpp
 DLL_TARGET = sbpro.dll
 TEST_TARGET = sbtest.com
 
-# Docker image with the MinGW 32-bit cross compiler
+# Protected-mode side (DJGPP): SBPM runs DOS/4GW games under HDPMI32i
+PM_TARGET = sbpm.exe
+PMTEST_TARGET = sbtestpm.exe
+DJGPP_CC ?= i586-pc-msdosdjgpp-gcc
+PM_BUILD = $(DJGPP_CC) -O2 -Wall -o $(PM_TARGET) sbpm.c sbpmtrap.S && \
+           $(DJGPP_CC) -O2 -Wall -o $(PMTEST_TARGET) sbtestpm.c
+
+# Docker images: MinGW for the JEMM module, DJGPP for the DPMI programs
 MINGW_IMAGE = sbpro-mingw
+DJGPP_IMAGE = djfdyuruiry/djgpp
 
 # DOS-side tools: JEMM (JEMMEX + JLOAD, matching versions) and HDPMI32i
 JEMM_URL = https://github.com/Baron-von-Riedesel/Jemm/releases/download/v5.86/JemmB_v586.zip
@@ -54,6 +62,10 @@ pull-mingw:
 	printf 'FROM debian:stable-slim\nRUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 g++-mingw-w64-i686 nasm && rm -rf /var/lib/apt/lists/*\n' \
 		| docker build -t $(MINGW_IMAGE) -
 
+# Target to pull the DJGPP Docker image
+pull-djgpp:
+	docker pull $(DJGPP_IMAGE)
+
 # Target to download JEMMEX, JLOAD and HDPMI32i into dist/
 get-dos-tools:
 	mkdir -p $(DIST)
@@ -63,13 +75,17 @@ get-dos-tools:
 	unzip -o -j HXRT223.zip BIN/HDPMI32i.EXE -d $(DIST)
 
 # Target to build SBPRO.DLL using MinGW in Docker
-msdos: pull-mingw get-dos-tools
+msdos: pull-mingw pull-djgpp get-dos-tools
 	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(MINGW_IMAGE) /bin/sh -c "cd /src && \
 	rm -f *.o && $(BUILD) && \
 	$(PATCH_PX) && \
 	nasm -f bin -o $(TEST_TARGET) sbtest.asm"
+	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(DJGPP_IMAGE) /bin/sh -c "cd /src && \
+	$(subst $(DJGPP_CC),gcc,$(PM_BUILD))"
 	cp $(DLL_TARGET) $(DIST)/SBPRO.DLL
 	cp $(TEST_TARGET) $(DIST)/SBTEST.COM
+	cp $(PM_TARGET) $(DIST)/SBPM.EXE
+	cp $(PMTEST_TARGET) $(DIST)/SBTESTPM.EXE
 
 # Target to build with a locally installed MinGW (no Docker)
 local:
@@ -77,6 +93,7 @@ local:
 	$(BUILD)
 	$(PATCH_PX)
 	nasm -f bin -o $(TEST_TARGET) sbtest.asm
+	$(PM_BUILD)
 
 # Target to run in QEMU with Intel HD Audio
 run: msdos
@@ -85,8 +102,8 @@ run: msdos
 
 # Clean target to remove generated files
 clean:
-	rm -f $(DLL_TARGET) $(TEST_TARGET) *.o JemmB_v586.zip HXRT223.zip || true
+	rm -f $(DLL_TARGET) $(TEST_TARGET) $(PM_TARGET) $(PMTEST_TARGET) *.o JemmB_v586.zip HXRT223.zip || true
 	rm -rf $(DIST) || true
 	rm *.DLL || true
 
-.PHONY: all pull-mingw get-dos-tools msdos local run clean
+.PHONY: all pull-mingw pull-djgpp get-dos-tools msdos local run clean
