@@ -14,6 +14,8 @@
 #include "jlm.h"
 #include "pci.h"
 #include "hda.h"
+#include "pic.h"
+#include "sbout.h"
 
 #define RING_BUFS    32
 #define CHUNK_FRAMES 128                               /* IRQ every 2.7 ms */
@@ -364,6 +366,8 @@ int hda_irq_service(void)
     if (!running || !(r8(sd + 0x03) & 0x04)) return 0;
     w8(sd + 0x03, 0x04);                                /* ack BCIS */
     refill();
+    pic_tick();
+    sb_tick();
     if (irq_line >= 8) outb(0xA0, 0x20);
     outb(0x20, 0x20);
     return 1;

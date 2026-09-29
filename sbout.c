@@ -292,12 +292,61 @@ uint8_t sb_dma_in(uint16_t port)
 
 /* ---------------------------------------------------------------- IRQ */
 
+/* The SB interrupt is delivered with an extra IRET frame on the game's
+   stack, so its handler returns through sbret_thunk first: SBPRO then knows
+   exactly when the handler has finished and never starts it a second time
+   while it is still running (handlers that EOI early and re-enable
+   interrupts would otherwise be re-entered, which they don't expect). */
+uint32_t sb_ret_callback;           /* seg:off of the V86 callback, 0 = none */
+static int isr_active, isr_age;
+#define ISR_TIMEOUT 200             /* HDA interrupts (~0.6 s): handler never returned */
+
+void sb_inject(Client *c, int vec)
+{
+    jlm_simulate_int(c, vec);
+    if (!sb_ret_callback) return;
+    uint32_t sp = (c->ESP - 6) & 0xFFFF;
+    uint32_t lin = ((c->SS & 0xFFFF) << 4) + sp;
+    *(volatile uint16_t *)lin = (uint16_t)sb_ret_callback;
+    *(volatile uint16_t *)(lin + 2) = (uint16_t)(sb_ret_callback >> 16);
+    *(volatile uint16_t *)(lin + 4) = (uint16_t)c->EFlags;
+    c->ESP = (c->ESP & 0xFFFF0000u) | sp;
+    isr_active = 1;
+    isr_age = 0;
+}
+
+void sb_isr_done(void)
+{
+    isr_active = 0;
+}
+
+void sb_tick(void)
+{
+    if (isr_active && ++isr_age > ISR_TIMEOUT) isr_active = 0;
+}
+
+/* Set by SBPM (protected mode): a byte in DOS memory that its CLI handler
+   sets whenever the game opens a "pushf / cli ... popf" critical section.
+   Under HDPMI32i such a CLI can't be honored (the POPF couldn't undo it),
+   so SBPM leaves interrupts on; holding the SB IRQ back for one HD Audio
+   period keeps the game's SB handler from running inside that section. */
+uint32_t sb_hold_addr;
+static int hold_streak;
+
 int sb_pending_vector(void)
 {
     if (!irq_pending) return 0;
     if (pic_masked(sb_irq)) return 0;                     /* masked: keep it pending */
+    if (pic_virtual_busy(sb_irq)) return 0;               /* previous one not EOIed yet */
+    if (isr_active) return 0;                             /* handler still running */
+    if (sb_hold_addr && *(volatile uint8_t *)sb_hold_addr) {
+        *(volatile uint8_t *)sb_hold_addr = 0;
+        if (++hold_streak <= 4) return 0;   /* don't starve the game either */
+    }
+    hold_streak = 0;
     int vec = sb_irq < 8 ? 0x08 + sb_irq : 0x70 + sb_irq - 8;
     irq_pending = 0;
+    pic_virtual_start(sb_irq);
     dbg("SB: IRQ %d -> int %X\n", sb_irq, vec);
     return vec;
 }

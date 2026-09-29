@@ -19,6 +19,7 @@
 #include <go32.h>
 #include <crt0.h>
 #include <sys/movedata.h>
+#include <sys/farptr.h>
 #include "sbpm.h"
 
 int _crt0_startup_flags = _CRT0_FLAG_LOCK_MEMORY;
@@ -44,7 +45,8 @@ static void rm_call(__dpmi_regs *r, uint16_t ip)
     r->x.cs = stub_seg;
     r->x.ip = ip;
     r->x.ss = r->x.sp = 0;
-    r->x.flags = 0x0202;            /* IF set: SBPRO may deliver the SB IRQ right away */
+    r->x.flags = 0x0002;            /* IF clear: no SB IRQ nested inside a trapped access;
+                                       SBPRO delivers it on its next HDA interrupt */
     __dpmi_simulate_real_mode_procedure_retf(r);
 }
 
@@ -194,6 +196,24 @@ static void untrap(uint32_t handle)
     __asm__ volatile("lcall *%1" : : "a"(7), "m"(hdpmi_api), "d"(handle) : "cc", "memory");
 }
 
+/* Tell SBPRO where our CLI flag is (mixer registers F8h-FAh are otherwise
+   unused on an SB Pro): it holds the SB IRQ back while the flag is set. */
+static void hold_register(int seg)
+{
+    rm_out(sb_base + 4, 0xF8); rm_out(sb_base + 5, (uint8_t)seg);
+    rm_out(sb_base + 4, 0xF9); rm_out(sb_base + 5, (uint8_t)(seg >> 8));
+    rm_out(sb_base + 4, 0xFA); rm_out(sb_base + 5, seg ? 0x5B : 0);
+}
+
+/* CLI trap on/off (API function 9, BL=0): see trap_cli in sbpmtrap.S */
+static void cli_trap(int on)
+{
+    uint16_t cs = on ? _my_cs() : 0;
+    uint32_t off = on ? (uint32_t)trap_cli : 0;
+    __asm__ volatile("lcall *%1" : : "a"(9), "m"(hdpmi_api), "b"(0), "c"(cs), "d"(off)
+                     : "cc", "memory");
+}
+
 /* ------------------------------------------------------------ main */
 
 static void parse_blaster(void)
@@ -221,11 +241,13 @@ int main(int argc, char **argv)
     }
 
     int sel;
-    int seg = __dpmi_allocate_dos_memory(1, &sel);
+    int seg = __dpmi_allocate_dos_memory(2, &sel);    /* stub + CLI flag at 10h */
     if (seg == -1) { printf("SBPM: out of DOS memory\n"); return 1; }
     stub_seg = (uint16_t)seg;
     dosmemput(stub_code, sizeof stub_code, (unsigned long)seg * 16);
+    _farpokeb(sel, 0x10, 0);
     pm_ds = (uint16_t)_my_ds();
+    hold_sel = (uint16_t)sel;
 
     /* SBPRO must be answering in real mode: a DSP reset should give AAh. */
     rm_out(sb_base + 6, 1);
@@ -258,16 +280,21 @@ int main(int argc, char **argv)
     printf("SBPM: Sound Blaster Pro at %Xh, MPU-401 at %Xh for protected-mode programs\n",
            sb_base, mpu_base);
 
+    cli_trap(1);
+    hold_register(seg);
+
     int rc;
     if (argc > first) {
         rc = spawnvp(P_WAIT, argv[first], argv + first);
         if (rc == -1) printf("SBPM: can't run %s\n", argv[first]);
     } else {
         const char *shell = getenv("COMSPEC");
-        printf("SBPM: type EXIT to leave\n");
+        printf("SBPM: protected-mode games started from this prompt have sound (EXIT leaves)\n");
         rc = spawnlp(P_WAIT, shell ? shell : "COMMAND.COM", shell ? shell : "COMMAND.COM", NULL);
     }
 
+    hold_register(0);
+    cli_trap(0);
     for (int i = n - 1; i >= 0; i--) untrap(handles[i]);
     __dpmi_free_dos_memory(sel);
     return rc < 0 ? 1 : rc;

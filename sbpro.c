@@ -111,6 +111,7 @@ static int pic_trapped;
 static void untrap_ports(void)
 {
     if (pic_trapped) {
+        pic_watching = 0;
         for (int i = 0; i < 4; i++) jlm_remove_io(pic_ports[i]);
         pic_restore();
         pic_trapped = 0;
@@ -146,6 +147,7 @@ static int trap_ports(void)
         jprintf("SBPRO: warning, can't watch the interrupt controller;\n"
                 "       games that rewrite the IRQ mask will stop the sound\n");
     }
+    pic_watching = pic_trapped == 4;
 
     /* Before 5.84, JLOAD keeps Jemm's own DMA handlers in its trap table
        and removing a handler there can leave a dangling entry: don't try. */
@@ -211,9 +213,9 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO 0.14: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+    jprintf("SBPRO 0.15: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
             jlm_version() & 0xFFFF, jlm_version() >> 16);
-    dbg("\n\n========== SBPRO 0.14 loaded ==========\n");
+    dbg("\n\n========== SBPRO 0.15 loaded ==========\n");
 
     if (!hda_init()) return 0;
     if (hda_irq() == sb_irq) {
@@ -233,6 +235,7 @@ static int load(JLCOMM *jc)
         hda_stop();
         return 0;
     }
+    sb_ret_callback = jlm_alloc_v86_callback(sbret_thunk, 0);   /* 0: plain delivery */
 
     jprintf("SBPRO: HDA IRQ %d. Emulating A%X I%d D%d%s\n", hda_irq(), sb_base, sb_irq, sb_dma,
             test_tone ? " (test tone)" : "");
@@ -246,6 +249,8 @@ static int unload(void)
 {
     untrap_ports();
     hda_stop();
+    if (sb_ret_callback) jlm_free_v86_callback(sb_ret_callback);
+    sb_ret_callback = 0;
     jprintf("SBPRO: unloaded\n");
     dbg("========== SBPRO unloaded ==========\n");
     return 1;

@@ -176,6 +176,10 @@ void dsp_out(uint16_t port, uint8_t v)
     case 0x5:
         if (mix_index == 0x00) mixer_reset();
         else dsp.mixer[mix_index] = v;
+        if (mix_index == 0xFA) {                /* SBPM registers its CLI flag */
+            uint32_t seg = dsp.mixer[0xF8] | (dsp.mixer[0xF9] << 8);
+            sb_hold_addr = (v == 0x5B && seg && seg < 0xA000) ? (seg << 4) + 0x10 : 0;
+        }
         break;
     case 0x6:
         if (v & 1) reset_latch = 1;

@@ -64,10 +64,12 @@ int      jlm_install_io(uint16_t port, void (*handler)(void));
 int      jlm_remove_io(uint16_t port);
 uint32_t jlm_alloc_v86_callback(void (*proc)(void), uint32_t refdata);   /* seg:off, 0 = fail */
 void     jlm_free_v86_callback(uint32_t segoff);
+void     jlm_simulate_int(Client *c, int vec);
 
 /* Assembly entry points that call into C */
 void io_thunk(void);            /* -> sb_io() */
 void irq_thunk(void);           /* -> hda_irq_service(), then IRET or chain */
+void sbret_thunk(void);         /* the game's SB handler has returned */
 extern uint32_t irq_chain_vector;
 
 uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type);

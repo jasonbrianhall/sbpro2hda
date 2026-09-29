@@ -163,7 +163,10 @@ _io_thunk:
         call    _sb_pending_vector
         testl   %eax, %eax
         jz      2f
-        VMM(Simulate_Int)
+        push    %eax
+        push    %ebp
+        call    _sb_inject
+        addl    $8, %esp
 2:      pop     %eax
 3:      ret
 
@@ -178,11 +181,42 @@ _irq_thunk:
         call    _sb_pending_vector
         testl   %eax, %eax
         jz      2f
-        VMM(Simulate_Int)               /* ...which first takes the SB IRQ */
+        push    %eax                    /* ...which first takes the SB IRQ */
+        push    %ebp
+        call    _sb_inject
+        addl    $8, %esp
 2:      ret
 1:      movzwl  _irq_chain_vector, %edx         /* not ours: continue at old vector */
         movzwl  _irq_chain_vector+2, %ecx
         VMM(Simulate_Far_Jmp)
+        ret
+
+/* V86 callback the game's SB interrupt handler returns to (sb_inject puts
+   it in the way). EBP = client, the stack holds the interrupted code's frame. */
+        .globl  _sbret_thunk
+_sbret_thunk:
+        cld
+        VMM(Simulate_Iret)              /* back to where the SB IRQ came in */
+        call    _sb_isr_done
+        testl   $0x200, 48(%ebp)
+        jz      1f
+        call    _sb_pending_vector      /* one more came due meanwhile? */
+        testl   %eax, %eax
+        jz      1f
+        push    %eax
+        push    %ebp
+        call    _sb_inject
+        addl    $8, %esp
+1:      ret
+
+/* void jlm_simulate_int(Client *c, int vec) */
+        .globl  _jlm_simulate_int
+_jlm_simulate_int:
+        push    %ebp
+        movl    8(%esp), %ebp
+        movl    12(%esp), %eax
+        VMM(Simulate_Int)
+        pop     %ebp
         ret
 
         .data

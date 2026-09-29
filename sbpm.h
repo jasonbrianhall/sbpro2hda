@@ -9,6 +9,8 @@
 extern uint16_t pm_ds;              /* our data selector, for the trap handler */
 void trap_in(void);                 /* sbpmtrap.S: HDPMI calls these */
 void trap_out(void);
+void trap_cli(void);                 /* CLI trap, see sbpmtrap.S */
+extern uint16_t hold_sel;            /* selector of the DOS block with the CLI flag */
 uint32_t pm_trap(uint32_t out, uint32_t err, uint32_t edx, uint32_t eax);
 
 #endif
