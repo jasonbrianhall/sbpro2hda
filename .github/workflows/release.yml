@@ -1,0 +1,65 @@
+# Builds SBPRO on every push and uploads sbpro-VERSION.zip as a build artifact.
+# Pushing a tag (v0.17 or 0.17, matching VERSION in the Makefile) also creates
+# a GitHub release with the zip attached.
+name: build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*', '[0-9]*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW, NASM and zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-i686 g++-mingw-w64-i686 nasm zip unzip wget
+
+      - name: Version
+        run: |
+          VERSION=$(make -s print-version)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ] && [ "$GITHUB_REF_NAME" != "$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION in the Makefile"
+            exit 1
+          fi
+
+      - name: Build SBPRO.DLL and SBTEST.COM (MinGW)
+        run: make jlm
+
+      - name: Build SBPM.EXE and SBTESTPM.EXE (DJGPP)
+        run: |
+          docker run --rm -v "$PWD":/src -u "$(id -u):$(id -g)" djfdyuruiry/djgpp /bin/sh -c "cd /src && \
+            gcc -O2 -Wall -DSBPRO_VERSION_NUM=$VERSION -o sbpm.exe sbpm.c sbpmtrap.S && \
+            gcc -O2 -Wall -DSBPRO_VERSION_NUM=$VERSION -o sbtestpm.exe sbtestpm.c"
+
+      - name: Package (driver, scripts, JEMMEX/JLOAD, HDPMI32i, tests)
+        run: make package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbpro-${{ env.VERSION }}
+          path: release/
+
+      - name: Create release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "sbpro-$VERSION.zip" \
+            --title "SBPRO $VERSION" \
+            --notes "Sound Blaster Pro 2.0 emulation over HD Audio for DOS.
+
+          Unzip to C:\\SBPRO, add \`DEVICE=C:\\SBPRO\\JEMMEX.EXE\` to CONFIG.SYS and
+          \`CALL C:\\SBPRO\\SBPRO.BAT\` as the last line of AUTOEXEC.BAT, then start
+          games from that prompt (real-mode and DOS/4GW games both get sound).
+          See README.TXT for options."
