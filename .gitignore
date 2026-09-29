@@ -1,0 +1,6 @@
+*.o
+release/
+dist/
+sbpro-*.zip
+JemmB_v*.zip
+HXRT*.zip

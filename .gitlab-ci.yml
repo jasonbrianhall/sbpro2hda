@@ -1,0 +1,90 @@
+# Builds SBPRO on every push; a tag (v0.17 or 0.17, matching VERSION in the
+# Makefile) also publishes sbpro-VERSION.zip as a GitLab release.
+
+stages:
+  - build
+  - package
+  - release
+
+variables:
+  PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/sbpro"
+
+# SBPRO.DLL (Jemm module) and SBTEST.COM
+build-jlm:
+  stage: build
+  image: debian:stable-slim
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends make gcc-mingw-w64-i686 g++-mingw-w64-i686 nasm
+  script:
+    - make jlm
+  artifacts:
+    paths: [sbpro.dll, sbtest.com]
+    expire_in: 1 week
+
+# SBPM.EXE and SBTESTPM.EXE (DJGPP)
+build-pm:
+  stage: build
+  image:
+    name: djfdyuruiry/djgpp
+    entrypoint: [""]
+  script:
+    - VERSION=$(sed -n 's/^VERSION=//p' Makefile)
+    - gcc -O2 -Wall -DSBPRO_VERSION_NUM=$VERSION -o sbpm.exe sbpm.c sbpmtrap.S
+    - gcc -O2 -Wall -DSBPRO_VERSION_NUM=$VERSION -o sbtestpm.exe sbtestpm.c
+  artifacts:
+    paths: [sbpm.exe, sbtestpm.exe]
+    expire_in: 1 week
+
+# sbpro-VERSION.zip: driver, loader scripts, JEMMEX/JLOAD, HDPMI32i, tests
+package:
+  stage: package
+  image: debian:stable-slim
+  needs: [build-jlm, build-pm]
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends make wget unzip zip ca-certificates
+  script:
+    - VERSION=$(make -s print-version)
+    - |
+      if [ -n "$CI_COMMIT_TAG" ] && [ "$CI_COMMIT_TAG" != "v$VERSION" ] && [ "$CI_COMMIT_TAG" != "$VERSION" ]; then
+        echo "Tag $CI_COMMIT_TAG does not match VERSION=$VERSION in the Makefile"; exit 1
+      fi
+    - make package
+    - echo "VERSION=$VERSION" > package.env
+  artifacts:
+    paths: ["sbpro-*.zip"]
+    reports:
+      dotenv: package.env
+    expire_in: 1 month
+
+# Tags only: store the zip permanently and create the release
+upload:
+  stage: release
+  image: curlimages/curl:latest
+  needs: [package]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - 'curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file sbpro-${VERSION}.zip "${PACKAGE_REGISTRY_URL}/${VERSION}/sbpro-${VERSION}.zip"'
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs: [package, upload]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "Releasing SBPRO $VERSION"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "SBPRO $VERSION"
+    description: |
+      Sound Blaster Pro 2.0 emulation over HD Audio for DOS (JEMMEX required).
+      Unzip to C:\SBPRO, add DEVICE=C:\SBPRO\JEMMEX.EXE to CONFIG.SYS and
+      CALL C:\SBPRO\SBPRO.BAT at the end of AUTOEXEC.BAT. See README.TXT.
+    assets:
+      links:
+        - name: "sbpro-${VERSION}.zip"
+          url: "${PACKAGE_REGISTRY_URL}/${VERSION}/sbpro-${VERSION}.zip"
+          link_type: package
