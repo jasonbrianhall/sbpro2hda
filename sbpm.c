@@ -11,6 +11,7 @@
  * traps it again and hands it to SBPRO - so all emulation stays in SBPRO.
  * The chatty status polls (AdLib status, DSP busy) are answered here.
  */
+#include "version.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -277,7 +278,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    printf("SBPM: Sound Blaster Pro at %Xh, MPU-401 at %Xh for protected-mode programs\n",
+    printf("SBPM " SBPRO_VERSION ": Sound Blaster Pro at %Xh, MPU-401 at %Xh for protected-mode programs\n",
            sb_base, mpu_base);
 
     cli_trap(1);

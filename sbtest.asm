@@ -1,3 +1,7 @@
+%ifndef SBPRO_VERSION_NUM
+%define SBPRO_VERSION_NUM dev
+%endif
+%defstr SBPRO_VERSION SBPRO_VERSION_NUM
 ; SBTEST.COM - Sound Blaster detection steps as games do them, with timeouts.
 ; Assumes A220 I5 D1. Build: nasm -f bin -o SBTEST.COM sbtest.asm
 ; Results go to the screen and to COM2 (so QEMU can log them).
@@ -615,7 +619,7 @@ puthex: push ax
         pop ax
         ret
 
-msg_hello       db "SBTEST 0.12", 13, 10, 0
+msg_hello       db "SBTEST ", SBPRO_VERSION, 13, 10, 0
 msg_reset_to    db "reset: TIMEOUT", 13, 10, 0
 msg_reset       db "reset: ", 0
 msg_ver         db "version: ", 0

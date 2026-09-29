@@ -16,17 +16,25 @@ TEST_TARGET = sbtest.com
 PM_TARGET = sbpm.exe
 PMTEST_TARGET = sbtestpm.exe
 DJGPP_CC ?= i586-pc-msdosdjgpp-gcc
-PM_BUILD = $(DJGPP_CC) -O2 -Wall -o $(PM_TARGET) sbpm.c sbpmtrap.S && \
-           $(DJGPP_CC) -O2 -Wall -o $(PMTEST_TARGET) sbtestpm.c
+VERDEF = -DSBPRO_VERSION_NUM=$(VERSION)
+PM_BUILD = $(DJGPP_CC) -O2 -Wall $(VERDEF) -o $(PM_TARGET) sbpm.c sbpmtrap.S && \
+           $(DJGPP_CC) -O2 -Wall $(VERDEF) -o $(PMTEST_TARGET) sbtestpm.c
 
 # Docker images: MinGW for the JEMM module, DJGPP for the DPMI programs
 MINGW_IMAGE = sbpro-mingw
 DJGPP_IMAGE = djfdyuruiry/djgpp
 
 # DOS-side tools: JEMM (JEMMEX + JLOAD, matching versions) and HDPMI32i
-JEMM_URL = https://github.com/Baron-von-Riedesel/Jemm/releases/download/v5.86/JemmB_v586.zip
-HXRT_URL = https://github.com/Baron-von-Riedesel/HX/releases/download/v2.23/HXRT223.zip
+JEMM_ZIP = JemmB_v586.zip
+HXRT_ZIP = HXRT223.zip
+JEMM_URL = https://github.com/Baron-von-Riedesel/Jemm/releases/download/v5.86/$(JEMM_ZIP)
+HXRT_URL = https://github.com/Baron-von-Riedesel/HX/releases/download/v2.23/$(HXRT_ZIP)
 DIST     = dist
+
+# Release package: sbpro-VERSION.zip with everything under SBPRO\ (DOS names)
+PKG_DIR  = release/SBPRO
+PKG_ZIP  = sbpro-$(VERSION).zip
+GPL_TEXT ?= /usr/share/common-licenses/GPL-2
 
 # QEMU disk image with FreeDOS (JEMMEX + JLOAD)
 DOS_IMAGE = freedos.img
@@ -38,21 +46,21 @@ GROUP_ID = $(shell id -g)
 CC      = i686-w64-mingw32-gcc
 CXX     = i686-w64-mingw32-g++
 BASEFLAGS = -O2 -Wall -march=i486 -ffreestanding -fno-builtin -fno-stack-protector \
-          -fno-asynchronous-unwind-tables -mno-stack-arg-probe
+          -fno-asynchronous-unwind-tables -mno-stack-arg-probe $(VERDEF)
 CFLAGS  = $(BASEFLAGS) -mgeneral-regs-only
 FPFLAGS = $(BASEFLAGS) -mfpmath=387 -mno-sse
 CXXFLAGS = $(FPFLAGS) -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wno-unused
 LDFLAGS = -shared -nostdlib -Wl,--subsystem,native -Wl,-e,_DllMain@12 \
           -Wl,--image-base,0x10000000 -lgcc
 
-# One shell line that builds everything (used both locally and in Docker)
-BUILD = $(CC) $(CFLAGS) -c $(SRCS) && \
+# One shell line that builds the module (used both locally and in Docker)
+BUILD = rm -f *.o && \
+        $(CC) $(CFLAGS) -c $(SRCS) && \
         $(CC) $(FPFLAGS) -c $(FPSRCS) && \
         $(CXX) $(CXXFLAGS) -c $(CXXSRCS) && \
-        $(CC) -o $(DLL_TARGET) *.o $(LDFLAGS)
-
-# JLOAD only accepts "PX" binaries: patch the "PE" signature
-PATCH_PX = sh patchpx.sh $(DLL_TARGET)
+        $(CC) -o $(DLL_TARGET) *.o $(LDFLAGS) && \
+        sh patchpx.sh $(DLL_TARGET) && \
+        nasm -f bin $(VERDEF) -o $(TEST_TARGET) sbtest.asm
 
 # Default target
 all: msdos
@@ -66,34 +74,55 @@ pull-mingw:
 pull-djgpp:
 	docker pull $(DJGPP_IMAGE)
 
-# Target to download JEMMEX, JLOAD and HDPMI32i into dist/
+# Target to download JEMMEX, JLOAD and HDPMI32i (plus their licenses) into dist/
 get-dos-tools:
 	mkdir -p $(DIST)
 	wget -N $(JEMM_URL)
 	wget -N $(HXRT_URL)
-	unzip -o -j JemmB_v586.zip JEMMEX.EXE JLOAD.EXE -d $(DIST)
-	unzip -o -j HXRT223.zip BIN/HDPMI32i.EXE -d $(DIST)
+	unzip -o -j $(JEMM_ZIP) JEMMEX.EXE JLOAD.EXE Artistic.txt -d $(DIST)
+	unzip -o -j $(HXRT_ZIP) BIN/HDPMI32i.EXE HXRT.TXT -d $(DIST)
 
-# Target to build SBPRO.DLL using MinGW in Docker
+# Build pieces without Docker (these are what the GitLab CI jobs run)
+jlm:
+	$(BUILD)
+
+pm:
+	$(PM_BUILD)
+
+# Target to build everything using Docker, then copy into dist/
 msdos: pull-mingw pull-djgpp get-dos-tools
-	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(MINGW_IMAGE) /bin/sh -c "cd /src && \
-	rm -f *.o && $(BUILD) && \
-	$(PATCH_PX) && \
-	nasm -f bin -o $(TEST_TARGET) sbtest.asm"
+	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(MINGW_IMAGE) /bin/sh -c "cd /src && $(BUILD)"
 	docker run --rm -v $(PWD):/src:z -u $(USER_ID):$(GROUP_ID) $(DJGPP_IMAGE) /bin/sh -c "cd /src && \
 	$(subst $(DJGPP_CC),gcc,$(PM_BUILD))"
 	cp $(DLL_TARGET) $(DIST)/SBPRO.DLL
 	cp $(TEST_TARGET) $(DIST)/SBTEST.COM
 	cp $(PM_TARGET) $(DIST)/SBPM.EXE
 	cp $(PMTEST_TARGET) $(DIST)/SBTESTPM.EXE
+	cp dos/*.BAT $(DIST)/
 
-# Target to build with a locally installed MinGW (no Docker)
-local:
-	rm -f *.o
-	$(BUILD)
-	$(PATCH_PX)
-	nasm -f bin -o $(TEST_TARGET) sbtest.asm
-	$(PM_BUILD)
+# Target to build with a locally installed MinGW and DJGPP (no Docker)
+local: jlm pm
+
+# Target to make the release zip from already built files (make msdos package)
+package: get-dos-tools
+	rm -rf release
+	mkdir -p $(PKG_DIR)
+	cp $(DLL_TARGET) $(PKG_DIR)/SBPRO.DLL
+	cp $(PM_TARGET) $(PKG_DIR)/SBPM.EXE
+	cp $(TEST_TARGET) $(PKG_DIR)/SBTEST.COM
+	cp $(PMTEST_TARGET) $(PKG_DIR)/SBTESTPM.EXE
+	cp $(DIST)/JEMMEX.EXE $(DIST)/JLOAD.EXE $(PKG_DIR)/
+	cp $(DIST)/HDPMI32i.EXE $(PKG_DIR)/HDPMI32I.EXE
+	cp $(DIST)/Artistic.txt $(PKG_DIR)/JEMM.TXT
+	cp $(DIST)/HXRT.TXT $(PKG_DIR)/HXRT.TXT
+	cp dos/SBPRO.BAT dos/SBREAL.BAT dos/README.TXT $(PKG_DIR)/
+	if [ -f $(GPL_TEXT) ]; then sed 's/$$/\r/' $(GPL_TEXT) > $(PKG_DIR)/COPYING.TXT; fi
+	rm -f $(PKG_ZIP)
+	cd release && zip -r -X ../$(PKG_ZIP) SBPRO
+	@echo "Built $(PKG_ZIP)"
+
+print-version:
+	@echo $(VERSION)
 
 # Target to run in QEMU with Intel HD Audio
 run: msdos
@@ -102,8 +131,8 @@ run: msdos
 
 # Clean target to remove generated files
 clean:
-	rm -f $(DLL_TARGET) $(TEST_TARGET) $(PM_TARGET) $(PMTEST_TARGET) *.o JemmB_v586.zip HXRT223.zip || true
-	rm -rf $(DIST) || true
+	rm -f $(DLL_TARGET) $(TEST_TARGET) $(PM_TARGET) $(PMTEST_TARGET) *.o $(JEMM_ZIP) $(HXRT_ZIP) sbpro-*.zip || true
+	rm -rf $(DIST) release || true
 	rm *.DLL || true
 
-.PHONY: all pull-mingw pull-djgpp get-dos-tools msdos local run clean
+.PHONY: all pull-mingw pull-djgpp get-dos-tools jlm pm msdos local package print-version run clean

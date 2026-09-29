@@ -10,6 +10,7 @@
  *   /T  play a test tone instead of emulated output
  *   /D  log port traffic to COM1, 115200 8N1 (QEMU: -serial file:sbpro.log)
  */
+#include "version.h"
 #include <stdint.h>
 #include <string.h>
 #include "jlm.h"
@@ -221,9 +222,9 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO 0.16: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+    jprintf("SBPRO " SBPRO_VERSION ": Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
             jlm_version() & 0xFFFF, jlm_version() >> 16);
-    dbg("\n\n========== SBPRO 0.16 loaded ==========\n");
+    dbg("\n\n========== SBPRO " SBPRO_VERSION " loaded ==========\n");
 
     if (!hda_init(hda_want, use_hdmi)) return 0;
     if (hda_irq() == sb_irq) {

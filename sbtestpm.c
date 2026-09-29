@@ -2,6 +2,7 @@
  * program, the way DOS/4GW games do them. Run under SBPM:  SBPM SBTESTPM
  * Assumes A220 I5 D1 P330. Results go to the screen and COM2.
  */
+#include "version.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -106,7 +107,7 @@ static void mpu_data(int v)
 
 int main(void)
 {
-    say("SBTESTPM 0.16 (protected mode)\n");
+    say("SBTESTPM " SBPRO_VERSION " (protected mode)\n");
 
     outportb(BASE + 6, 1);
     for (int i = 0; i < 100; i++) inportb(0x80);
