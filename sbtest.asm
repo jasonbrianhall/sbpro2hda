@@ -349,6 +349,16 @@ start:
         mov si, msg_midi
         call puts
 
+; ---- 14. dense MIDI: 12 loud notes on 3 channels for ~1 s (clipping check)
+        mov si, midi_chord_on
+        call mpu_send
+        mov bx, 18
+        call wait_ticks_plain
+        mov si, midi_chord_off
+        call mpu_send
+        mov si, msg_chord
+        call puts
+
 ; ---- restore
         cli
         xor ax, ax
@@ -632,6 +642,13 @@ msg_mpu_uart    db "MPU-401 UART ACK (want FE): ", 0
 msg_midi        db "MIDI middle C played (1 s)", 13, 10, 0
 midi_on         db 0C0h, 00h, 0B0h, 07h, 7Fh, 90h, 3Ch, 7Fh, 0FFh
 midi_off        db 80h, 3Ch, 00h, 0FFh
+msg_chord       db "MIDI 12-note chord played (1 s)", 13, 10, 0
+midi_chord_on   db 0C0h,00h, 0C1h,30h, 0C2h,21h
+                db 0B0h,07h,7Fh, 0B1h,07h,7Fh, 0B2h,07h,7Fh
+                db 90h,3Ch,7Fh, 40h,7Fh, 43h,7Fh, 48h,7Fh
+                db 91h,30h,7Fh, 34h,7Fh, 37h,7Fh, 3Ch,7Fh
+                db 92h,24h,7Fh, 28h,7Fh, 2Bh,7Fh, 30h,7Fh, 0FFh
+midi_chord_off  db 0B0h,7Bh,00h, 0B1h,7Bh,00h, 0B2h,7Bh,00h, 0FFh
 msg_yes         db "yes", 13, 10, 0
 msg_no          db "NO", 13, 10, 0
 msg_bye         db "done", 13, 10, 0

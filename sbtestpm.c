@@ -106,7 +106,7 @@ static void mpu_data(int v)
 
 int main(void)
 {
-    say("SBTESTPM 0.13 (protected mode)\n");
+    say("SBTESTPM 0.14 (protected mode)\n");
 
     outportb(BASE + 6, 1);
     for (int i = 0; i < 100; i++) inportb(0x80);
@@ -195,6 +195,30 @@ int main(void)
     irqs = 0;
     dsp_w(0x14); dsp_w(3999 & 0xFF); dsp_w(3999 >> 8);
     say("IRQ with absolute PIC mask: %s\n", wait_irqs(1, 55) ? "yes" : "NO");
+
+    outportb(0x21, old_mask & ~(1 << IRQ));
+
+    /* Doom-like load: auto-init digital playback plus a MIDI note stream
+       (status polled before every byte) for ~3 s. */
+    setup_dma(4000, 1);
+    irqs = 0;
+    dsp_w(0x48); dsp_w(999 & 0xFF); dsp_w(999 >> 8);
+    dsp_w(0x1C);
+    unsigned start = ticks(), sent = 0;
+    int n = 0;
+    while (ticks() - start < 55) {
+        int ch = n % 3, note = 48 + (n * 7) % 24;
+        mpu_data(0x90 | ch); mpu_data(note); mpu_data(0x70);
+        mpu_data(0x80 | ((n + 2) % 3)); mpu_data(48 + ((n - 2) * 7 + 48) % 24); mpu_data(0);
+        mpu_data(0xB0 | ch); mpu_data(7); mpu_data(100);
+        sent += 9;
+        n++;
+        unsigned t = ticks();
+        while (ticks() == t) ;
+    }
+    dsp_w(0xDA);
+    for (int c = 0; c < 3; c++) { mpu_data(0xB0 | c); mpu_data(123); mpu_data(0); }
+    say("stress: %u MIDI bytes in 3 s alongside digital, %d SB IRQs (want ~33)\n", sent, irqs);
 
     outportb(0x21, old_mask);
     _go32_dpmi_set_protected_mode_interrupt_vector(8 + IRQ, &old_isr);

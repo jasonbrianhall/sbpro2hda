@@ -336,14 +336,19 @@ int hda_init(void)
 
 /* ---------------------------------------------------------------- runtime */
 
+uint32_t hda_underruns;                 /* the ring ran dry (debug) */
+static int primed;
+
 static void refill(void)
 {
     uint32_t play = (r32(sd + 0x04) / 4) & RING_MASK;
     uint32_t ahead = (write_pos - play) & RING_MASK;
     if (ahead > TARGET_AHEAD * 2) {                     /* underrun or first run */
+        if (primed) hda_underruns++;
         write_pos = (play + TARGET_AHEAD / 2) & RING_MASK;
         ahead = TARGET_AHEAD / 2;
     }
+    primed = 1;
     while (ahead < TARGET_AHEAD) {
         int n = TARGET_AHEAD - ahead;
         if (n > (int)(RING_FRAMES - write_pos)) n = RING_FRAMES - write_pos;

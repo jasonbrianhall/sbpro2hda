@@ -80,6 +80,7 @@ static void rm_out2(uint16_t port, uint8_t a, uint8_t b)   /* port = a, port+1 =
 
 static uint8_t fm_index[3];         /* 388/SB+0/SB+8 bank 0, 38A/SB+2 bank 1 */
 static uint8_t fm_status, busy_count;
+static int mpu_pending;             /* a command was sent; its ACK may be waiting */
 
 static int fm_slot(uint16_t p)      /* index port -> slot, or -1 */
 {
@@ -98,7 +99,10 @@ static uint8_t pm_in(uint16_t port)
     if (fm_slot(port) >= 0) return fm_status;       /* OPL status, answered here */
     if (fm_data_slot(port) >= 0) return 0xFF;
     if (port == sb_base + 0x0C) return (++busy_count & 8) ? 0xFF : 0x7F;
-    return rm_in(port);
+    if (port == mpu_base + 1 && !mpu_pending) return 0xBF;  /* ready, nothing to read */
+    uint8_t v = rm_in(port);
+    if (port == mpu_base + 1 && (v & 0x80)) mpu_pending = 0;
+    return v;
 }
 
 static void pm_out(uint16_t port, uint8_t v)
@@ -117,6 +121,7 @@ static void pm_out(uint16_t port, uint8_t v)
         }
         return;
     }
+    if (port == mpu_base + 1) mpu_pending = 1;
     rm_out(port, v);
 }
 

@@ -25,7 +25,7 @@
 __attribute__((dllexport)) DDB ddb = {
     .Req_Device_Number = SBPRO_DEVICE_ID,
     .Dev_Major_Version = 0,
-    .Dev_Minor_Version = 13,
+    .Dev_Minor_Version = 14,
     .Name = { 'S', 'B', 'P', 'R', 'O', ' ', ' ', ' ' },
     .Init_Order = 0x80000000u,
     .Size = sizeof(DDB),
@@ -211,9 +211,9 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO 0.13: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+    jprintf("SBPRO 0.14: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
             jlm_version() & 0xFFFF, jlm_version() >> 16);
-    dbg("\n\n========== SBPRO 0.13 loaded ==========\n");
+    dbg("\n\n========== SBPRO 0.14 loaded ==========\n");
 
     if (!hda_init()) return 0;
     if (hda_irq() == sb_irq) {

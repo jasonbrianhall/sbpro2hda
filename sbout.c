@@ -185,6 +185,16 @@ static void next_frame(void)
 
 static int32_t mix[2 * OPL_MAX_FRAMES];
 
+/* Soft limiter: linear up to 3/4 of full scale, then 4:1 until the rail,
+   so loud moments (music + effects together) squash instead of crackle. */
+static inline int16_t limit(int32_t v)
+{
+    const int32_t knee = 24576;
+    if (v > knee) { v = knee + (v - knee) / 4; if (v > 32767) v = 32767; }
+    else if (v < -knee) { v = -knee + (v + knee) / 4; if (v < -32768) v = -32768; }
+    return (int16_t)v;
+}
+
 static void render_chunk(int16_t *out, int frames)
 {
     for (int i = 0; i < frames; i++) {
@@ -208,19 +218,19 @@ static void render_chunk(int16_t *out, int frames)
     opl_mix(mix, frames);
 
     /* /D: report the FM level twice a second while it's playing */
-    static uint32_t since;
+    static uint32_t since, last_underruns;
     since += frames;
     if (since >= HDA_RATE / 2) {
         if (opl_peak) dbg("FM: peak %d\n", opl_peak);
+        if (hda_underruns != last_underruns) {
+            dbg("HDA: %u underruns\n", hda_underruns);
+            last_underruns = hda_underruns;
+        }
         opl_peak = 0;
         since = 0;
     }
-    for (int i = 0; i < frames * 2; i++) {
-        int32_t v = mix[i];
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-        out[i] = (int16_t)v;
-    }
+    for (int i = 0; i < frames * 2; i++)
+        out[i] = limit(mix[i]);
 }
 
 void sb_render(int16_t *out, int frames)

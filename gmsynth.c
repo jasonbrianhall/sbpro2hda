@@ -1,4 +1,4 @@
-/* General MIDI synthesizer on a private OPL3 (18 two-operator voices).
+/* General MIDI synthesizer on two private OPL3s (36 two-operator voices).
  * Instrument bank from felixterminal. Integer-only: runs inside the port
  * trap handler, so no FPU and no library calls.
  */
@@ -7,7 +7,7 @@
 #include "gmsynth.h"
 #include "gmbank.h"
 
-#define VOICES 18
+#define VOICES 36                   /* 18 per chip */
 
 /* Operator register offset of each channel's modulator; carrier is +3. */
 static const uint8_t op_slot[9] = { 0x00, 0x01, 0x02, 0x08, 0x09, 0x0A, 0x10, 0x11, 0x12 };
@@ -28,8 +28,10 @@ static uint8_t status, data[2], need, got, in_sysex;
 
 /* ------------------------------------------------------------ registers */
 
-static uint32_t vbank(int v) { return v >= 9 ? 0x100 : 0; }
-static void w(uint32_t reg, uint8_t val) { midi_opl_write(reg, val); }
+/* Voice v lives on chip v / 18, register bank (v % 18) / 9, channel v % 9.
+   The chip number rides in bit 12 of the register so callers stay simple. */
+static uint32_t vbank(int v) { return (v >= 18 ? 0x1000 : 0) | ((v % 18) >= 9 ? 0x100 : 0); }
+static void w(uint32_t reg, uint8_t val) { midi_opl_write(reg >> 12, reg & 0x1FF, val); }
 
 static const uint8_t *instrument(int chan, int note)
 {
@@ -228,10 +230,12 @@ void gm_reset(void)
     memset(voice, 0, sizeof voice);
     for (int c = 0; c < 16; c++) { prog[c] = 0; reset_controllers(c); }
     status = need = got = in_sysex = 0;
-    w(0x105, 0x01);                                 /* OPL3 mode: stereo, 18 voices */
-    w(0x104, 0x00);                                 /* no 4-operator pairs */
-    w(0x001, 0x20);                                 /* waveform select */
-    w(0x0BD, 0x00);                                 /* melodic mode */
+    for (uint32_t c = 0; c < 0x2000; c += 0x1000) {
+        w(c | 0x105, 0x01);                         /* OPL3 mode: stereo, 18 voices */
+        w(c | 0x104, 0x00);                         /* no 4-operator pairs */
+        w(c | 0x001, 0x20);                         /* waveform select */
+        w(c | 0x0BD, 0x00);                         /* melodic mode */
+    }
 }
 
 void gm_midi_byte(uint8_t b)
