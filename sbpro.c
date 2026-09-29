@@ -203,7 +203,7 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+    jprintf("SBPRO 0.9: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
             jlm_version() & 0xFFFF, jlm_version() >> 16);
 
     if (!hda_init()) return 0;
