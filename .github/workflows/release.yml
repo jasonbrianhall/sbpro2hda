@@ -1,6 +1,5 @@
-# Builds SBPRO on every push and uploads sbpro-VERSION.zip as a build artifact.
-# Pushing a tag (v0.17 or 0.17, matching VERSION in the Makefile) also creates
-# a GitHub release with the zip attached.
+# Builds SBPRO on every push. Pushes to the default branch (and tags) put
+# sbpro-VERSION.zip on the GitHub release vVERSION, VERSION from the Makefile.
 name: build
 
 on:
@@ -50,16 +49,21 @@ jobs:
           name: sbpro-${{ env.VERSION }}
           path: release/
 
-      - name: Create release
-        if: github.ref_type == 'tag'
+      # A push to the default branch publishes release v<VERSION> (created the
+      # first time, its zip replaced on later pushes). Bump VERSION in the
+      # Makefile to start a new release. Pushing a tag works too.
+      - name: Publish release
+        if: >-
+          github.event_name == 'push' &&
+          (github.ref_type == 'tag' ||
+           github.ref_name == github.event.repository.default_branch)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "sbpro-$VERSION.zip" \
-            --title "SBPRO $VERSION" \
-            --notes "Sound Blaster Pro 2.0 emulation over HD Audio for DOS.
-
-          Unzip to C:\\SBPRO, add \`DEVICE=C:\\SBPRO\\JEMMEX.EXE\` to CONFIG.SYS and
-          \`CALL C:\\SBPRO\\SBPRO.BAT\` as the last line of AUTOEXEC.BAT, then start
-          games from that prompt (real-mode and DOS/4GW games both get sound).
-          See README.TXT for options."
+          if [ "$GITHUB_REF_TYPE" = tag ]; then TAG="$GITHUB_REF_NAME"; else TAG="v$VERSION"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "sbpro-$VERSION.zip" --clobber
+          else
+            gh release create "$TAG" "sbpro-$VERSION.zip" --target "$GITHUB_SHA" \
+              --title "SBPRO $VERSION" --notes-file dos/RELEASE.md
+          fi
