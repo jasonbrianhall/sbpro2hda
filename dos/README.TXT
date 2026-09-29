@@ -15,6 +15,7 @@ Options (after SBPRO.BAT or SBREAL.BAT):
    /D     debug log on COM1 (115200 baud)
 BLASTER defaults to A220 I5 D1 P330 T4; set it first to change it.
 SBTEST.COM and SBTESTPM.EXE (run it from the SBPRO prompt) test the card.
+KBTEST.COM checks that arrow key presses/releases all arrive during sound.
 
 SBPRO.DLL and SBPM.EXE: GPL v2 or later (COPYING.TXT); OPL3 emulation
 from DOSBox. JEMMEX/JLOAD: Japheth (JEMM.TXT). HDPMI32i: Japheth (HXRT.TXT).

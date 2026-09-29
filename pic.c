@@ -36,28 +36,44 @@ void pic_tick(void)
         vis_irq = -1, vis_cascade = 0;
 }
 
-/* OCW2 on 20h/A0h: returns 1 if the EOI was for the emulated IRQ. */
+static uint8_t ocw3_read[2] = { 0x0A, 0x0A };   /* game's IRR/ISR read select */
+
+/* In-service register of the real controller. */
+static uint8_t real_isr(int c)
+{
+    uint16_t port = c ? 0xA0 : 0x20;
+    outb(port, 0x0B);
+    uint8_t isr = inb(port);
+    outb(port, ocw3_read[c]);
+    return isr;
+}
+
+/* An EOI ends the highest-priority interrupt in service, as on a real 8259:
+   if a real interrupt of higher priority than the emulated one is in service
+   (a timer or keyboard handler), the EOI is its and goes to the controller.
+   Otherwise it's for the emulated IRQ. Returns 1 if the EOI was ours. */
 static int virtual_eoi(int c, uint8_t v)
 {
     int cmd = v & 0xE0, level = v & 7;
     if (cmd != 0x20 && cmd != 0x60) return 0;               /* not an EOI */
+    int want;                                               /* our level here */
     if (c == 1) {
         if (vis_irq < 8) return 0;
-        if (cmd == 0x60 && level != vis_irq - 8) return 0;
-        vis_irq = -1;
-        return 1;
+        want = vis_irq - 8;
+    } else if (vis_irq >= 0 && vis_irq < 8) {
+        want = vis_irq;
+    } else if (vis_cascade && vis_irq < 0) {                /* slave EOI came first */
+        want = 2;
+    } else return 0;
+    if (cmd == 0x60) {
+        if (level != want) return 0;                        /* specific EOI, not ours */
+    } else if (real_isr(c) & ((2u << want) - 1)) {
+        return 0;                                           /* a real one ranks higher */
     }
-    if (vis_irq >= 0 && vis_irq < 8) {
-        if (cmd == 0x60 && level != vis_irq) return 0;
-        vis_irq = -1;
-        return 1;
-    }
-    if (vis_cascade && vis_irq < 0) {                       /* slave EOI came first */
-        if (cmd == 0x60 && level != 2) return 0;
-        vis_cascade = 0;
-        return 1;
-    }
-    return 0;
+    if (c == 1 || vis_irq < 8) vis_irq = -1;
+    else vis_cascade = 0;
+    if (c == 0) vis_cascade = 0;
+    return 1;
 }
 
 void pic_init(int hda_irq)
@@ -92,6 +108,8 @@ void pic_out(uint16_t port, uint8_t v)
             icw_left[c] = 1 + !(v & 0x02) + (v & 0x01);
         else if (!(v & 0x08) && virtual_eoi(c, v))  /* OCW2: EOI for our IRQ */
             return;
+        else if ((v & 0x08) && (v & 0x02))          /* OCW3: IRR/ISR read select */
+            ocw3_read[c] = 0x08 | (v & 0x03);
         outb(port, v);
         return;
     }

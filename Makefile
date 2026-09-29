@@ -1,5 +1,5 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.16
+VERSION=0.17
 
 # Source files
 # C files that must never touch the FPU (they run inside interrupts)
@@ -60,7 +60,8 @@ BUILD = rm -f *.o && \
         $(CXX) $(CXXFLAGS) -c $(CXXSRCS) && \
         $(CC) -o $(DLL_TARGET) *.o $(LDFLAGS) && \
         sh patchpx.sh $(DLL_TARGET) && \
-        nasm -f bin $(VERDEF) -o $(TEST_TARGET) sbtest.asm
+        nasm -f bin $(VERDEF) -o $(TEST_TARGET) sbtest.asm && \
+        nasm -f bin -o kbtest.com kbtest.asm
 
 # Default target
 all: msdos
@@ -96,6 +97,7 @@ msdos: pull-mingw pull-djgpp get-dos-tools
 	$(subst $(DJGPP_CC),gcc,$(PM_BUILD))"
 	cp $(DLL_TARGET) $(DIST)/SBPRO.DLL
 	cp $(TEST_TARGET) $(DIST)/SBTEST.COM
+	cp kbtest.com $(DIST)/KBTEST.COM
 	cp $(PM_TARGET) $(DIST)/SBPM.EXE
 	cp $(PMTEST_TARGET) $(DIST)/SBTESTPM.EXE
 	cp dos/*.BAT $(DIST)/
@@ -110,6 +112,7 @@ package: get-dos-tools
 	cp $(DLL_TARGET) $(PKG_DIR)/SBPRO.DLL
 	cp $(PM_TARGET) $(PKG_DIR)/SBPM.EXE
 	cp $(TEST_TARGET) $(PKG_DIR)/SBTEST.COM
+	cp kbtest.com $(PKG_DIR)/KBTEST.COM
 	cp $(PMTEST_TARGET) $(PKG_DIR)/SBTESTPM.EXE
 	cp $(DIST)/JEMMEX.EXE $(DIST)/JLOAD.EXE $(PKG_DIR)/
 	cp $(DIST)/HDPMI32i.EXE $(PKG_DIR)/HDPMI32I.EXE
@@ -131,7 +134,7 @@ run: msdos
 
 # Clean target to remove generated files
 clean:
-	rm -f $(DLL_TARGET) $(TEST_TARGET) $(PM_TARGET) $(PMTEST_TARGET) *.o $(JEMM_ZIP) $(HXRT_ZIP) sbpro-*.zip || true
+	rm -f $(DLL_TARGET) $(TEST_TARGET) kbtest.com $(PM_TARGET) $(PMTEST_TARGET) *.o $(JEMM_ZIP) $(HXRT_ZIP) sbpro-*.zip || true
 	rm -rf $(DIST) release || true
 	rm *.DLL || true
 
