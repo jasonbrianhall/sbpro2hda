@@ -14,6 +14,7 @@ void sb_out_exit_autoinit(void);
 void sb_out_raise_irq(void);
 void sb_render(int16_t *out, int frames);   /* HDA render callback */
 int  sb_pending_vector(void);
+int  sb_busy(void);                         /* transfer running or IRQ outstanding */
 void sb_inject(Client *c, int vec);         /* deliver the SB IRQ into V86 */
 void sb_isr_done(void);                     /* from sbret_thunk */
 void sb_tick(void);                         /* from the HDA interrupt */

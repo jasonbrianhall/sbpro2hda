@@ -1,5 +1,5 @@
 # Makefile for SBPRO.DLL, a Jemm Loadable Module (load with JLOAD)
-VERSION=0.19
+VERSION=0.20
 
 # Source files
 # C files that must never touch the FPU (they run inside interrupts)

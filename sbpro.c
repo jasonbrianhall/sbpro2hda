@@ -73,6 +73,7 @@ static void log_io(uint32_t port, uint32_t v, int out)
 uint32_t sb_io(uint32_t data, uint32_t port, uint32_t type)
 {
     uint16_t p = (uint16_t)port;
+    if (!pic_owns(p)) hda_wake();                       /* the game is using the card */
     if (type & IO_OUTPUT) {
         if (!pic_owns(p) || (p & 1)) log_io(port, data & 0xFF, 1);   /* skip EOIs */
         if (pic_owns(p)) pic_out(p, (uint8_t)data);
@@ -238,7 +239,7 @@ static int load(JLCOMM *jc)
     if (!sb_out_map_init()) jprintf("SBPRO: warning, DMA buffers above 640K won't play\n");
     dsp_init(sb_base);
     if (!trap_ports()) { hda_stop(); return 0; }
-    if (!hda_start(test_tone ? render_tone : sb_render)) {
+    if (!hda_start(test_tone ? render_tone : sb_render, test_tone ? 0 : sb_busy)) {
         jprintf("SBPRO: no V86 callback left for the HDA IRQ\n");
         untrap_ports();
         hda_stop();

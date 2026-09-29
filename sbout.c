@@ -18,6 +18,7 @@
 #include "hda.h"
 #include "sbout.h"
 #include "pic.h"
+static int isr_active;
 #include "opl.h"
 
 #define WINDOW_PAGES 17                     /* 64 KB + one page of slack */
@@ -146,6 +147,8 @@ void sb_out_start(int autoinit, uint32_t len_bytes, int silence)
     }
     s.active = 1;
 }
+
+int sb_busy(void) { return s.active || irq_pending || isr_active; }
 
 void sb_out_stop(void)            { s.active = 0; irq_pending = 0; }
 void sb_out_exit_autoinit(void)   { s.autoinit = 0; }
@@ -298,7 +301,7 @@ uint8_t sb_dma_in(uint16_t port)
    while it is still running (handlers that EOI early and re-enable
    interrupts would otherwise be re-entered, which they don't expect). */
 uint32_t sb_ret_callback;           /* seg:off of the V86 callback, 0 = none */
-static int isr_active, isr_age;
+static int isr_age;
 #define ISR_TIMEOUT 200             /* HDA interrupts (~0.6 s): handler never returned */
 
 void sb_inject(Client *c, int vec)

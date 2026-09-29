@@ -376,6 +376,15 @@ int hda_init(int want, int hdmi)
 uint32_t hda_underruns;                 /* the ring ran dry (debug) */
 static int primed;
 
+/* Idle stop: at the DOS prompt nothing plays, but a running stream keeps
+   the machine (and a VM's emulated sound card) busy with ~375 interrupts a
+   second. After a second of silence with no SB transfer the stream is
+   paused; any access to the emulated ports (hda_wake) starts it again. */
+#define IDLE_IRQS 375
+#define MAX_RENDER 256          /* frames per interrupt at most; catches up over the next ones */
+static int idle_irqs, paused_idle, block_silent;
+static hda_busy_fn busy;
+
 static void refill(void)
 {
     uint32_t play = (r32(sd + 0x04) / 4) & RING_MASK;
@@ -386,22 +395,58 @@ static void refill(void)
         ahead = TARGET_AHEAD / 2;
     }
     primed = 1;
-    while (ahead < TARGET_AHEAD) {
+    int budget = MAX_RENDER;            /* bound the time spent with interrupts off */
+    while (ahead < TARGET_AHEAD && budget > 0) {
         int n = TARGET_AHEAD - ahead;
+        if (n > budget) n = budget;
+        budget -= n;
         if (n > (int)(RING_FRAMES - write_pos)) n = RING_FRAMES - write_pos;
         render(&ring[write_pos * 2], n);
+        {
+            const uint32_t *p = (const uint32_t *)&ring[write_pos * 2];
+            for (int i = 0; i < n && block_silent; i++)
+                if (p[i]) block_silent = 0;
+        }
         write_pos = (write_pos + n) & RING_MASK;
         ahead += n;
     }
 }
 
 /* Called from irq_thunk. Returns 0 if the interrupt wasn't ours (shared line). */
+static inline uint64_t tsc(void) { uint64_t t; __asm__ volatile("rdtsc" : "=A"(t)); return t; }
+static uint64_t t_last, t_busy, t_span, t_max, t_maxper;
+static int t_n;
+
 int hda_irq_service(void)
 {
     if (!running || !(r8(sd + 0x03) & 0x04)) return 0;
+    uint64_t t0 = dbg_on ? tsc() : 0;
     w8(sd + 0x03, 0x04);                                /* ack BCIS */
+    block_silent = 1;
     refill();
+    if (block_silent && !(busy && busy())) {
+        if (++idle_irqs >= IDLE_IRQS) {
+            w8(sd, 0x04);                               /* RUN off, IOCE on */
+            paused_idle = 1;
+            idle_irqs = 0;
+        }
+    } else idle_irqs = 0;
     sb_tick();
+    if (dbg_on) {                       /* /D: time spent here, % of the IRQ period */
+        uint64_t t1 = tsc();
+        if (t_last) {
+            uint64_t per = t0 - t_last, b = t1 - t0;
+            t_busy += b; t_span += per;
+            if (b > t_max) { t_max = b; t_maxper = per; }
+            if (++t_n >= 375 && t_span) {
+                dbg("HDA: IRQ work avg %u%% of the time, longest %u%% of a period\n",
+                    (uint32_t)(t_busy * 100 / t_span),
+                    (uint32_t)(t_maxper ? t_max * 100 / t_maxper : 0));
+                t_busy = t_span = t_max = 0; t_n = 0;
+            }
+        }
+        t_last = t0;
+    }
     if (irq_line >= 8) outb(0xA0, 0x20);
     outb(0x20, 0x20);
     return 1;
@@ -413,9 +458,24 @@ static uint32_t irq_ivt_addr(void)
     return (uint32_t)vec * 4;
 }
 
-int hda_start(hda_render_fn fn)
+/* From the port trap: the game is doing something, make sure we play. */
+void hda_wake(void)
+{
+    if (!paused_idle || !running) return;
+    paused_idle = 0;
+    idle_irqs = 0;
+    uint32_t play = (r32(sd + 0x04) / 4) & RING_MASK;
+    memset(ring, 0, RING_FRAMES * 4);                   /* old data would replay */
+    write_pos = play;
+    primed = 0;
+    refill();
+    w8(sd, 0x02 | 0x04);                                /* RUN + IOCE */
+}
+
+int hda_start(hda_render_fn fn, hda_busy_fn busy_fn)
 {
     render = fn;
+    busy = busy_fn;
     write_pos = 0;
 
     irq_callback = jlm_alloc_v86_callback(irq_thunk, 0);
