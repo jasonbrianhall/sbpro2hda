@@ -133,10 +133,23 @@ The version lives in the Makefile (`VERSION=`). GitHub Actions
 (`.github/workflows/release.yml`) builds every push; a push to the default
 branch publishes release `vVERSION` with the zip attached.
 
+## Real hardware
+
+So far SBPRO has only been tested in QEMU and VirtualBox. It sets up the
+controller the way Linux does (Intel TCSEL, snooping on AMD/ATI, NVIDIA and
+Intel SCH), but real codecs and laptops vary. If you try it on a real PC,
+please open an issue with:
+
+- the machine or motherboard, and whether it worked,
+- the COM1 log from loading with `/D` (null-modem cable, 115200 baud). It
+  starts with the controller's PCI ID and a dump of the codec's widgets and
+  pin configuration, which is usually enough to see why a machine stays
+  silent.
+
 ## Debugging
 
 Load with `/D` and capture COM1 (QEMU: `-serial file:sbpro.log`). The log
-shows port traffic, transfers, IRQ delivery, and once a second the time spent
+shows the HD Audio controller and codec layout, port traffic, transfers, IRQ delivery, and once a second the time spent
 in SBPRO's interrupt handler.
 
 ## Credits

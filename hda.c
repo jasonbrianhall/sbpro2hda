@@ -221,6 +221,22 @@ static int setup_codec(int cad, uint8_t tag, uint16_t fmt, int digital)
             }
         }
 
+        if (dbg_on) {                                   /* /D: the codec's layout */
+            dbg("HDA: codec %d vendor %08X rev %08X, function group %d, widgets %d-%d\n",
+                cad, param(cad, 0, 0x00), param(cad, 0, 0x02), fg, start, start + count - 1);
+            for (int n = start; n < start + count && n < 128; n++) {
+                Widget *w = &widgets[n];
+                dbg("  nid %02X type %X caps %08X", n, w->type, w->caps);
+                if (w->type == 4)
+                    dbg(" pincaps %08X config %08X", param(cad, n, 0x0C), verb(cad, n, 0xF1C, 0));
+                if (w->nconn) {
+                    dbg(" conn");
+                    for (int i = 0; i < w->nconn; i++) dbg(" %02X", w->conn[i]);
+                }
+                dbg("\n");
+            }
+        }
+
         for (int n = start; n < start + count && n < 128; n++) {
             if (widgets[n].type != 4) continue;                /* pin complex */
             uint32_t pcaps = param(cad, n, 0x0C);
@@ -263,9 +279,33 @@ static int fail(const char *msg)
     return 0;
 }
 
+/* Chipset settings Linux's HD Audio driver makes on every boot: without
+   them some controllers read stale data from the CPU cache (noise or
+   silence) or play static. */
+static void pci_quirks(PciDev d)
+{
+    uint32_t id = pci_read(d, 0x00);
+    uint16_t ven = id & 0xFFFF, dev = id >> 16;
+    dbg("HDA: controller %04X:%04X at %02X:%02X.%X\n", ven, dev, d.bus, d.dev, d.fn);
+    if (ven == 0x8086) {
+        pci_update_byte(d, 0x44, 0x07, 0);              /* TCSEL: traffic class 0 */
+        if (dev == 0x811B || dev == 0x080A || dev == 0x0F04 || dev == 0x2284) {
+            uint32_t devc = pci_read(d, 0x78);          /* SCH: turn snooping on */
+            if (devc & 0x800) pci_write(d, 0x78, devc & ~0x800u);
+        }
+    } else if (ven == 0x1002 || ven == 0x1022) {        /* ATI / AMD: enable snoop */
+        pci_update_byte(d, 0x42, 0x07, 0x02);
+    } else if (ven == 0x10DE) {                         /* NVIDIA: coherent DMA */
+        pci_update_byte(d, 0x4E, 0x0F, 0x0F);
+        pci_update_byte(d, 0x4D, 0x01, 0x01);
+        pci_update_byte(d, 0x4C, 0x01, 0x01);
+    }
+}
+
 static int try_controller(PciDev d, int digital)
 {
     sd = 0;
+    pci_quirks(d);
     uint32_t bar = pci_read(d, 0x10);
     if ((bar & 0x6) == 0x4 && pci_read(d, 0x14) != 0) return fail("BAR above 4 GB");
     irq_line = pci_read(d, 0x3C) & 0xFF;

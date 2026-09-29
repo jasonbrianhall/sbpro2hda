@@ -40,3 +40,12 @@ int pci_find_class(int cls, int sub, int index, PciDev *out)
             }
     return 0;
 }
+
+/* Read-modify-write of one config byte: clear 'mask', then set 'bits'. */
+void pci_update_byte(PciDev d, int off, uint8_t mask, uint8_t bits)
+{
+    uint32_t v = pci_read(d, off & ~3);
+    int sh = (off & 3) * 8;
+    v = (v & ~((uint32_t)mask << sh)) | ((uint32_t)bits << sh);
+    pci_write(d, off & ~3, v);
+}
