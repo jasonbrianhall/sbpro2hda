@@ -15,7 +15,8 @@ Options (after SBPRO.BAT or SBREAL.BAT):
    /D     debug log on COM1 (115200 baud)
 BLASTER defaults to A220 I5 D1 P330 T4; set it first to change it.
 SBTEST.COM and SBTESTPM.EXE (run it from the SBPRO prompt) test the card.
-KBTEST.COM checks that arrow key presses/releases all arrive during sound.
+KBTEST.COM checks that key presses/releases and PS/2 mouse data all arrive
+during sound (for the mouse part, boot without a mouse driver).
 
 Included third-party tools: JEMMEX/JLOAD by Japheth (JEMM.TXT),
 HDPMI32i by Japheth (HXRT.TXT). OPL3 emulation from DOSBox.

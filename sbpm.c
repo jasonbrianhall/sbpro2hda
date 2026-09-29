@@ -264,7 +264,7 @@ int main(int argc, char **argv)
 
     struct { uint16_t start, count; } ranges[] = {
         { sb_base, 16 }, { 0x388, 4 }, { mpu_base, 2 },
-        { 0x20, 2 }, { 0xA0, 2 },
+        { 0x21, 1 }, { 0xA1, 1 },            /* masks only: EOIs go straight to the PIC */
         { (uint16_t)(sb_dma * 2), 2 }, { 0x08, 1 },
     };
     const int n = sizeof ranges / sizeof ranges[0];

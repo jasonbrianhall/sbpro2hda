@@ -1,8 +1,9 @@
-; KBTEST.COM - does every arrow key press and release reach the game's
-; keyboard handler while SB sound plays? Counts E0 4B/CB (left) and
-; E0 4D/CD (right) make/break codes with a game-style INT 9 handler while
-; 8-bit auto-init DMA runs at A220 I5 D1. ESC ends and prints the counts
-; (hex) to the screen and COM2. The SB handler enables interrupts before
+; KBTEST.COM - do all keyboard and PS/2 mouse bytes reach the game's handlers
+; while SB sound plays? Counts E0 4B/CB (left) and E0 4D/CD (right)
+; make/break codes with a game-style INT 9 handler, and PS/2 mouse packets
+; (sync errors = lost or misplaced bytes, plus summed motion) with its own
+; IRQ 12 handler, while 8-bit auto-init DMA runs at A220 I5 D1. ESC ends and
+; prints the counts (hex) to the screen and COM2. The SB handler enables interrupts before
 ; its EOI, as some games do, so keyboard IRQs can land inside it.
         org 100h
 
@@ -29,6 +30,14 @@ start:
         mov ax, 250Dh
         mov dx, sb_isr
         int 21h
+        mov ax, 3574h
+        int 21h
+        mov [old74], bx
+        mov [old74+2], es
+        mov ax, 2574h
+        mov dx, ms_isr
+        int 21h
+        call mouse_on
 
         ; buffer: a sawtooth, audible but quiet
         mov di, buf
@@ -126,6 +135,12 @@ start:
         mov ax, 250Dh
         int 21h
         pop ds
+        call mouse_off
+        push ds
+        lds dx, [old74]
+        mov ax, 2574h
+        int 21h
+        pop ds
 
         mov si, msg_l
         call puts
@@ -146,6 +161,22 @@ start:
         mov si, msg_sb
         call puts
         mov ax, [sbirq]
+        call putw
+        mov si, msg_ms
+        call puts
+        mov ax, [mpk]
+        call putw
+        mov si, msg_err
+        call puts
+        mov ax, [merr]
+        call putw
+        mov si, msg_dx
+        call puts
+        mov ax, [mdx]
+        call putw
+        mov si, msg_dy
+        call puts
+        mov ax, [mdy]
         call putw
         mov si, msg_nl
         call puts
@@ -197,6 +228,124 @@ sb_isr: push ax
         out 20h, al
 .s:     pop dx
         pop cx
+        pop ax
+        iret
+
+; ---- PS/2 mouse through the 8042
+kbc_wait:                               ; input buffer empty
+        push cx
+        mov cx, 0FFFFh
+.w:     in al, 64h
+        test al, 02h
+        loopnz .w
+        pop cx
+        ret
+kbc_cmd:                                ; AH = command
+        call kbc_wait
+        mov al, ah
+        out 64h, al
+        ret
+kbc_data:                               ; AH = data byte to port 60h
+        call kbc_wait
+        mov al, ah
+        out 60h, al
+        ret
+kbc_read:                               ; -> AL
+        push cx
+        mov cx, 0FFFFh
+.w:     in al, 64h
+        test al, 01h
+        loopz .w
+        in al, 60h
+        pop cx
+        ret
+
+mouse_on:
+        cli
+        mov ah, 0A8h                    ; enable aux port
+        call kbc_cmd
+        mov ah, 20h                     ; read command byte
+        call kbc_cmd
+        call kbc_read
+        or al, 02h                      ; aux interrupt on
+        and al, 0DFh                    ; aux clock on
+        push ax
+        mov ah, 60h
+        call kbc_cmd
+        pop ax
+        mov ah, al
+        call kbc_data
+        mov byte [wait_ack], 1
+        mov ah, 0D4h                    ; to mouse: enable reporting
+        call kbc_cmd
+        mov ah, 0F4h
+        call kbc_data
+        in al, 0A1h                     ; unmask IRQ 12 and the cascade
+        and al, 0EFh
+        out 0A1h, al
+        in al, 21h
+        and al, 0FBh
+        out 21h, al
+        sti
+        ret
+
+mouse_off:
+        mov byte [wait_ack], 1
+        mov ah, 0D4h                    ; disable reporting
+        call kbc_cmd
+        mov ah, 0F5h
+        call kbc_data
+        mov cx, 0FFFFh
+.w:     in al, 80h
+        loop .w
+        in al, 0A1h
+        or al, 10h
+        out 0A1h, al
+        ret
+
+ms_isr: push ax
+        push bx
+        in al, 60h
+        cmp byte [cs:wait_ack], 0
+        je .d
+        cmp al, 0FAh
+        jne .d
+        mov byte [cs:wait_ack], 0
+        jmp .eoi
+.d:     mov bl, [cs:midx]
+        cmp bl, 0
+        jne .b1
+        test al, 08h                    ; first byte always has bit 3 set
+        jnz .s0
+        inc word [cs:merr]
+        jmp .eoi
+.s0:    mov [cs:mb0], al
+        mov byte [cs:midx], 1
+        jmp .eoi
+.b1:    cmp bl, 1
+        jne .b2
+        mov [cs:mb1], al
+        mov byte [cs:midx], 2
+        jmp .eoi
+.b2:    mov byte [cs:midx], 0
+        inc word [cs:mpk]
+        mov bl, al                      ; dy
+        mov al, [cs:mb1]                ; dx, sign in bit 4 of byte 0
+        mov ah, 0
+        test byte [cs:mb0], 10h
+        jz .px
+        mov ah, 0FFh
+.px:    add [cs:mdx], ax
+        mov al, bl
+        mov ah, 0
+        test byte [cs:mb0], 20h
+        jz .py
+        mov ah, 0FFh
+.py:    add [cs:mdy], ax
+.eoi:   mov al, 20h
+        out 0A0h, al
+        out 20h, al
+        pop bx
         pop ax
         iret
 
@@ -270,11 +419,24 @@ putc:   push ax
         pop ax
         ret
 
-msg_go  db "KBTEST: press arrows, ESC ends", 13, 10, 0
+msg_go  db "KBTEST: press arrows, move the mouse, ESC ends", 13, 10, 0
 msg_l   db "left make/break ", 0
 msg_r   db "  right make/break ", 0
 msg_sb  db "  SB IRQs ", 0
+msg_ms  db 13, 10, "mouse packets ", 0
+msg_err db "  sync errors ", 0
+msg_dx  db "  dx ", 0
+msg_dy  db "  dy ", 0
 msg_nl  db 13, 10, 0
+old74   dd 0
+wait_ack db 0
+midx    db 0
+mb0     db 0
+mb1     db 0
+mpk     dw 0
+merr    dw 0
+mdx     dw 0
+mdy     dw 0
 old9    dd 0
 oldd    dd 0
 e0      db 0
