@@ -186,6 +186,8 @@ static uint32_t hex(const char **s)
     }
 }
 
+static int hda_want, use_hdmi;
+
 static uint32_t dec(const char **s)
 {
     uint32_t v = 0;
@@ -205,6 +207,12 @@ static void parse_args(const char *s)
         case '/': case '-':
             if ((*s | 0x20) == 't') { test_tone = 1; s++; }
             else if ((*s | 0x20) == 'd') { dbg_init(); s++; }
+            else if ((*s | 0x20) == 'h') {
+                s++;
+                if ((s[0] | 0x20) == 'd' && (s[1] | 0x20) == 'm' && (s[2] | 0x20) == 'i') {
+                    use_hdmi = 1; s += 3;                   /* /HDMI */
+                } else hda_want = dec(&s);                  /* /H2 = second controller */
+            }
             break;
         }
     }
@@ -213,11 +221,11 @@ static void parse_args(const char *s)
 static int load(JLCOMM *jc)
 {
     parse_args((const char *)jc->lpCmdLine);
-    jprintf("SBPRO 0.15: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
+    jprintf("SBPRO 0.16: Sound Blaster Pro 2.0 emulation over HD Audio (JEMM %u.%u)\n",
             jlm_version() & 0xFFFF, jlm_version() >> 16);
-    dbg("\n\n========== SBPRO 0.15 loaded ==========\n");
+    dbg("\n\n========== SBPRO 0.16 loaded ==========\n");
 
-    if (!hda_init()) return 0;
+    if (!hda_init(hda_want, use_hdmi)) return 0;
     if (hda_irq() == sb_irq) {
         jprintf("SBPRO: HD Audio uses IRQ %d; pick another SB IRQ (e.g. I7)\n", sb_irq);
         hda_stop();

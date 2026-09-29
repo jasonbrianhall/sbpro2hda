@@ -106,7 +106,7 @@ static void mpu_data(int v)
 
 int main(void)
 {
-    say("SBTESTPM 0.15 (protected mode)\n");
+    say("SBTESTPM 0.16 (protected mode)\n");
 
     outportb(BASE + 6, 1);
     for (int i = 0; i < 100; i++) inportb(0x80);

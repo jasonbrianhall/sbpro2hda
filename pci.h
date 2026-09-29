@@ -4,7 +4,7 @@
 
 typedef struct { int bus, dev, fn; } PciDev;
 
-int      pci_find_class(int cls, int sub, PciDev *out);
+int      pci_find_class(int cls, int sub, int index, PciDev *out);   /* index-th match */
 uint32_t pci_read(PciDev d, int off);
 void     pci_write(PciDev d, int off, uint32_t v);
 

@@ -194,7 +194,7 @@ static int route_to_dac(int cad, int nid, int depth)
     return -1;
 }
 
-static int setup_codec(int cad, uint8_t tag, uint16_t fmt)
+static int setup_codec(int cad, uint8_t tag, uint16_t fmt, int digital)
 {
     uint32_t sub = param(cad, 0, 0x04);
     int fg0 = (sub >> 16) & 0xFF, fgn = sub & 0xFF, any = 0;
@@ -227,17 +227,25 @@ static int setup_codec(int cad, uint8_t tag, uint16_t fmt)
             if (!(pcaps & (1 << 4))) continue;                 /* output capable */
             uint32_t cfg = verb(cad, n, 0xF1C, 0);
             int conn = cfg >> 30, dev = (cfg >> 20) & 0xF;
-            if (conn == 1) continue;
-            if (dev > 0x2) continue;                           /* line out, speaker, HP */
+            if (conn == 1) continue;                           /* nothing attached */
+            if (digital) {
+                if (dev != 0x4 && dev != 0x5) continue;        /* S/PDIF, HDMI/DP */
+                if ((pcaps & (1 << 2)) && !(verb(cad, n, 0xF09, 0) & 0x80000000u))
+                    continue;                                  /* no monitor on it */
+            } else if (dev > 0x2) continue;                    /* line out, speaker, HP */
             int dac = route_to_dac(cad, n, 0);
             if (dac < 0) continue;
             verb(cad, n, 0x707, dev == 0x2 ? 0xC0 : 0x40);
             if (pcaps & (1 << 16)) verb(cad, n, 0x70C, 0x02);  /* EAPD */
             verb4(cad, dac, 0x2, fmt);
             verb(cad, dac, 0x706, tag << 4);
+            if (digital) {
+                verb(cad, dac, 0x72D, 1);                      /* 2 channels */
+                verb(cad, dac, 0x70D, 0x01);                   /* digital converter on */
+            }
             unmute_out(cad, dac);
             verb(cad, dac, 0x705, 0);
-            jprintf("HDA: codec %d pin %d -> DAC %d\n", cad, n, dac);
+            jprintf("HDA: codec %d pin %d -> %s %d\n", cad, n, digital ? "digital out" : "DAC", dac);
             any = 1;
         }
     }
@@ -255,11 +263,9 @@ static int fail(const char *msg)
     return 0;
 }
 
-int hda_init(void)
+static int try_controller(PciDev d, int digital)
 {
-    PciDev d;
-    if (!pci_find_class(0x04, 0x03, &d)) return fail("no controller");
-
+    sd = 0;
     uint32_t bar = pci_read(d, 0x10);
     if ((bar & 0x6) == 0x4 && pci_read(d, 0x14) != 0) return fail("BAR above 4 GB");
     irq_line = pci_read(d, 0x3C) & 0xFF;
@@ -311,8 +317,8 @@ int hda_init(void)
 
     int routed = 0;
     for (int cad = 0; cad < 15; cad++)
-        if (codecs & (1 << cad)) routed |= setup_codec(cad, tag, fmt);
-    if (!routed) return fail("no usable output pin");
+        if (codecs & (1 << cad)) routed |= setup_codec(cad, tag, fmt, digital);
+    if (!routed) return fail(0);
 
     /* stream reset */
     w8(sd, r8(sd) | 1);
@@ -334,6 +340,35 @@ int hda_init(void)
     w16(sd + 0x12, fmt);
     w8(sd + 0x02, tag << 4);
     return 1;
+}
+
+/* Several controllers are common (onboard + graphics card HDMI). Unless
+   told otherwise (want = controller number from 1, hdmi = digital outputs),
+   the first one with an analog output wins, else the first HDMI/DP output
+   with a monitor on it. */
+int hda_init(int want, int hdmi)
+{
+    PciDev d;
+    int found = 0;
+    for (int pass = hdmi ? 1 : 0; pass < 2; pass++) {
+        for (int i = 0; pci_find_class(0x04, 0x03, i, &d); i++) {
+            found = i + 1;
+            if (want && want != i + 1) continue;
+            if (pass == (hdmi ? 1 : 0))
+                jprintf("HDA: controller %d at %02X:%02X.%X\n", i + 1, d.bus, d.dev, d.fn);
+            if (try_controller(d, pass)) {
+                if (pass) jprintf("HDA: using controller %d (HDMI/DisplayPort)\n", i + 1);
+                else if (found > 1 || pci_find_class(0x04, 0x03, i + 1, &d))
+                    jprintf("HDA: using controller %d\n", i + 1);
+                return 1;
+            }
+        }
+    }
+    if (!found) jprintf("HDA: no HD Audio controller found\n");
+    else if (want && want > found) jprintf("HDA: there is no controller %d\n", want);
+    else if (hdmi) jprintf("HDA: no HDMI/DisplayPort output with a monitor on it\n");
+    else jprintf("HDA: no usable output (speakers, line out, headphones or HDMI monitor)\n");
+    return 0;
 }
 
 /* ---------------------------------------------------------------- runtime */

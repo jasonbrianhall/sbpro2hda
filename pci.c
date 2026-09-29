@@ -20,7 +20,7 @@ void pci_write(PciDev d, int off, uint32_t v)
     outl(0xCFC, v);
 }
 
-int pci_find_class(int cls, int sub, PciDev *out)
+int pci_find_class(int cls, int sub, int index, PciDev *out)
 {
     PciDev d;
     for (d.bus = 0; d.bus < 256; d.bus++)
@@ -32,7 +32,7 @@ int pci_find_class(int cls, int sub, PciDev *out)
                     continue;
                 }
                 uint32_t cc = pci_read(d, 0x08);
-                if ((int)(cc >> 24) == cls && (int)((cc >> 16) & 0xFF) == sub) {
+                if ((int)(cc >> 24) == cls && (int)((cc >> 16) & 0xFF) == sub && index-- == 0) {
                     *out = d;
                     return 1;
                 }

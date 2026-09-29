@@ -8,7 +8,7 @@
    no floating point, no DOS/BIOS calls, no printf. */
 typedef void (*hda_render_fn)(int16_t *out, int frames);
 
-int  hda_init(void);            /* finds controller, routes codec, sets up stream; 1 = ok */
+int  hda_init(int want, int hdmi);  /* controller number (0 = auto), use HDMI; 1 = ok */
 int  hda_irq(void);             /* PCI interrupt line */
 int  hda_start(hda_render_fn fn);  /* installs the IRQ handler and runs the stream */
 void hda_stop(void);
